@@ -1,0 +1,1132 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+
+<title>Stepper Controller</title>
+
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+
+<style>
+
+body
+{
+    margin:0;
+    font-family:Arial;
+    background:#0f172a;
+    color:white;
+}
+
+
+.header
+{
+    background:#020617;
+    padding:20px;
+    text-align:center;
+    font-size:32px;
+    font-weight:bold;
+    position:relative;
+}
+
+
+.logout
+{
+    position:absolute;
+    right:20px;
+    top:50%;
+    transform:translateY(-50%);
+    font-size:16px;
+    color:#38bdf8;
+    text-decoration:none;
+}
+
+
+
+.container
+{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+    gap:20px;
+    padding:20px;
+}
+
+
+
+.card
+{
+    background:#1e293b;
+    border-radius:15px;
+    padding:20px;
+    box-shadow:0 0 15px black;
+}
+
+
+
+h2
+{
+    color:#38bdf8;
+}
+
+
+
+button
+{
+    width:100%;
+    padding:15px;
+    margin:5px 0;
+    border-radius:10px;
+    border:none;
+    font-size:18px;
+    cursor:pointer;
+}
+
+
+
+.green
+{
+background:#16a34a;
+color:white;
+}
+
+
+.red
+{
+background:#dc2626;
+color:white;
+}
+
+
+.blue
+{
+background:#2563eb;
+color:white;
+}
+
+
+.orange
+{
+background:#ea580c;
+color:white;
+}
+
+
+.gray
+{
+background:#475569;
+color:white;
+}
+
+
+
+input,select
+{
+width:100%;
+padding:12px;
+margin:5px 0;
+border-radius:8px;
+font-size:16px;
+box-sizing:border-box;
+}
+
+
+input[readonly]
+{
+background:#334155;
+color:#94a3b8;
+}
+
+
+
+.light
+{
+width:30px;
+height:30px;
+border-radius:50%;
+display:inline-block;
+background:#facc15;
+vertical-align:middle;
+}
+
+
+
+.value
+{
+font-size:25px;
+color:#facc15;
+}
+
+
+
+.status-line
+{
+font-size:22px;
+}
+
+
+
+.limit-group
+{
+margin-bottom:15px;
+padding-bottom:10px;
+border-bottom:1px solid #334155;
+}
+
+
+.limit-group label
+{
+display:block;
+font-size:14px;
+color:#94a3b8;
+margin-bottom:5px;
+}
+
+
+.mode-toggle
+{
+display:flex;
+gap:5px;
+}
+
+
+.mode-btn
+{
+flex:1;
+padding:8px;
+font-size:14px;
+margin:5px 0;
+border-radius:8px;
+border:none;
+background:#334155;
+color:#94a3b8;
+cursor:pointer;
+}
+
+
+.mode-btn.active
+{
+background:#2563eb;
+color:white;
+}
+
+
+.jog-panel
+{
+background:#0f172a;
+border-radius:10px;
+padding:10px;
+margin-top:5px;
+}
+
+
+.jog-panel p
+{
+margin:5px 0;
+font-size:15px;
+}
+
+
+.jog-position
+{
+color:#facc15;
+font-weight:bold;
+}
+
+
+
+</style>
+
+</head>
+
+
+
+<body>
+
+
+<div class="header">
+
+STEPPER CONTROLLER
+
+<a class="logout" href="/logout">Logout</a>
+
+</div>
+
+
+
+
+<div class="container">
+
+
+
+
+
+<!-- STATUS -->
+
+
+<div class="card">
+
+
+<h2>
+Machine Status
+</h2>
+
+
+<p class="status-line">
+
+<span id="statusLight"
+class="light">
+</span>
+
+
+<span id="machineStatus">
+STARTING
+</span>
+
+</p>
+
+
+
+<hr>
+
+
+<p>
+
+Position :
+
+<span class="value"
+id="position">
+
+0
+
+</span>
+
+</p>
+
+
+
+<p>
+
+Homed :
+
+<span id="homed">
+NO
+</span>
+
+</p>
+
+
+
+<p>
+
+Forward Limit :
+
+<span id="forwardLimit">
+0
+</span>
+
+</p>
+
+
+
+<p>
+
+Backward Limit :
+
+<span id="backwardLimit">
+0
+</span>
+
+</p>
+
+
+
+</div>
+
+
+
+
+
+
+<!-- PROJECTS -->
+
+
+<div class="card">
+
+
+<h2>
+Machine Projects
+</h2>
+
+
+<select id="projectSelect">
+
+
+{% for name,data in projects.items() %}
+
+<option value="{{name}}">
+
+{{name}}
+
+</option>
+
+
+{% endfor %}
+
+
+</select>
+
+
+
+<button class="blue"
+onclick="loadProject()">
+
+LOAD PROJECT
+
+</button>
+
+
+
+</div>
+
+
+
+
+
+
+<!-- ADD PROJECT -->
+
+
+<div class="card">
+
+
+<h2>
+Add New Project
+</h2>
+
+
+
+<input id="newName"
+placeholder="Machine Name">
+
+
+
+<!-- FORWARD LIMIT -->
+
+<div class="limit-group">
+
+<label>Forward Limit</label>
+
+<div class="mode-toggle">
+
+<button type="button"
+class="mode-btn active"
+id="fwdTypeBtn"
+onclick="setMode('forward','type')">
+TYPE VALUE
+</button>
+
+<button type="button"
+class="mode-btn"
+id="fwdJogBtn"
+onclick="setMode('forward','jog')">
+JOG TO SET
+</button>
+
+</div>
+
+
+<input id="newForward"
+type="number"
+placeholder="Forward Steps">
+
+
+<div id="fwdJogPanel"
+class="jog-panel"
+style="display:none;">
+
+<p>
+Current Position :
+<span class="jog-position"
+id="fwdJogPosition">
+0
+</span>
+</p>
+
+<button class="green"
+onmousedown="startMove('forward')"
+onmouseup="stopMove('forward')"
+onmouseleave="stopMove('forward')"
+ontouchstart="startMove('forward')"
+ontouchend="stopMove('forward')">
+HOLD TO MOVE FORWARD
+</button>
+
+<button class="orange"
+onmousedown="startMove('backward')"
+onmouseup="stopMove('forward')"
+onmouseleave="stopMove('forward')"
+ontouchstart="startMove('backward')"
+ontouchend="stopMove('forward')">
+HOLD TO MOVE BACKWARD
+</button>
+
+</div>
+
+</div>
+
+
+
+<!-- BACKWARD LIMIT -->
+
+<div class="limit-group">
+
+<label>Backward Limit</label>
+
+<div class="mode-toggle">
+
+<button type="button"
+class="mode-btn active"
+id="bwdTypeBtn"
+onclick="setMode('backward','type')">
+TYPE VALUE
+</button>
+
+<button type="button"
+class="mode-btn"
+id="bwdJogBtn"
+onclick="setMode('backward','jog')">
+JOG TO SET
+</button>
+
+</div>
+
+
+<input id="newBackward"
+type="number"
+placeholder="Backward Steps">
+
+
+<div id="bwdJogPanel"
+class="jog-panel"
+style="display:none;">
+
+<p>
+Current Position :
+<span class="jog-position"
+id="bwdJogPosition">
+0
+</span>
+</p>
+
+<button class="green"
+onmousedown="startMove('forward')"
+onmouseup="stopMove('backward')"
+onmouseleave="stopMove('backward')"
+ontouchstart="startMove('forward')"
+ontouchend="stopMove('backward')">
+HOLD TO MOVE FORWARD
+</button>
+
+<button class="orange"
+onmousedown="startMove('backward')"
+onmouseup="stopMove('backward')"
+onmouseleave="stopMove('backward')"
+ontouchstart="startMove('backward')"
+ontouchend="stopMove('backward')">
+HOLD TO MOVE BACKWARD
+</button>
+
+</div>
+
+</div>
+
+
+
+<button class="green"
+onclick="addProject()">
+
+SAVE PROJECT
+
+</button>
+
+
+</div>
+
+
+
+
+
+
+
+<!-- CONTROL -->
+
+
+<div class="card">
+
+
+<h2>
+Machine Control
+</h2>
+
+
+
+<button class="blue"
+onclick="homeMachine()">
+
+HOME MACHINE
+
+</button>
+
+
+
+<button class="green"
+onclick="forwardMove()">
+
+FORWARD
+
+</button>
+
+
+
+<button class="orange"
+onclick="backwardMove()">
+
+BACKWARD
+
+</button>
+
+
+
+
+<button class="red"
+onclick="stopMachine()">
+
+EMERGENCY STOP
+
+</button>
+
+
+
+</div>
+
+
+
+
+
+
+<!-- LIMIT -->
+
+
+<div class="card">
+
+
+<h2>
+Limit Setting
+</h2>
+
+
+
+<button class="green"
+onclick="saveForward()">
+
+SAVE FORWARD LIMIT
+
+</button>
+
+
+
+<button class="orange"
+onclick="saveBackward()">
+
+SAVE BACKWARD LIMIT
+
+</button>
+
+
+
+<button class="red"
+onclick="clearLimits()">
+
+CLEAR LIMITS
+
+</button>
+
+
+
+</div>
+
+
+
+</div>
+
+
+
+
+
+
+
+
+
+<script>
+
+
+
+
+function addProject()
+{
+
+
+let data=
+{
+
+name:
+document.getElementById("newName").value,
+
+
+forward:
+document.getElementById("newForward").value,
+
+
+backward:
+document.getElementById("newBackward").value
+
+
+};
+
+
+
+fetch("/add_project",
+{
+
+method:"POST",
+
+headers:
+{
+"Content-Type":"application/json"
+},
+
+
+body:
+JSON.stringify(data)
+
+
+})
+
+
+.then(r=>r.text())
+
+.then(t=>
+{
+
+alert(t);
+
+location.reload();
+
+});
+
+
+}
+
+
+
+
+
+
+
+
+function loadProject()
+{
+
+
+let name=
+document.getElementById("projectSelect").value;
+
+
+
+fetch("/select_project",
+{
+
+method:"POST",
+
+headers:
+{
+"Content-Type":"application/json"
+},
+
+
+body:
+JSON.stringify(
+{
+name:name
+})
+
+})
+
+
+.then(r=>r.text())
+
+.then(alert);
+
+
+}
+
+
+
+
+
+
+
+
+
+function homeMachine()
+{
+
+fetch("/home");
+
+}
+
+
+
+function stopMachine()
+{
+
+fetch("/stop");
+
+}
+
+
+
+
+function forwardMove()
+{
+
+fetch("/jog/forward");
+
+}
+
+
+
+
+function backwardMove()
+{
+
+fetch("/jog/backward");
+
+}
+
+
+
+
+function saveForward()
+{
+
+fetch("/save_forward")
+.then(r=>r.text())
+.then(alert);
+
+}
+
+
+
+
+function saveBackward()
+{
+
+fetch("/save_backward")
+.then(r=>r.text())
+.then(alert);
+
+}
+
+
+
+
+function clearLimits()
+{
+
+if(!confirm("Clear the saved forward and backward limits?"))
+{
+    return;
+}
+
+fetch("/clear_limits")
+.then(r=>r.text())
+.then(alert);
+
+}
+
+
+
+
+
+// ==========================
+// ADD PROJECT: TYPE / JOG MODE
+// ==========================
+
+
+function setMode(which, mode)
+{
+
+let typeBtn=
+document.getElementById(
+which=="forward" ? "fwdTypeBtn" : "bwdTypeBtn"
+);
+
+
+let jogBtn=
+document.getElementById(
+which=="forward" ? "fwdJogBtn" : "bwdJogBtn"
+);
+
+
+let input=
+document.getElementById(
+which=="forward" ? "newForward" : "newBackward"
+);
+
+
+let panel=
+document.getElementById(
+which=="forward" ? "fwdJogPanel" : "bwdJogPanel"
+);
+
+
+
+if(mode=="jog")
+{
+
+typeBtn.classList.remove("active");
+
+jogBtn.classList.add("active");
+
+input.readOnly=true;
+
+panel.style.display="block";
+
+}
+else
+{
+
+typeBtn.classList.add("active");
+
+jogBtn.classList.remove("active");
+
+input.readOnly=false;
+
+panel.style.display="none";
+
+}
+
+
+}
+
+
+
+
+
+// Hold-to-move buttons used by the jog panel.
+// mousedown/touchstart starts continuous motion,
+// mouseup/touchend or leaving the button stops it.
+
+function startMove(direction)
+{
+
+fetch("/move/"+direction);
+
+}
+
+
+
+function stopMove(which)
+{
+
+fetch("/stop")
+
+.then(()=>
+{
+
+if(which)
+{
+
+captureLimit(which);
+
+}
+
+});
+
+}
+
+
+
+
+
+function captureLimit(which)
+{
+
+fetch("/position")
+
+.then(r=>r.json())
+
+.then(p=>
+{
+
+let pos=p.position;
+
+
+if(which=="forward")
+{
+
+document.getElementById("newForward").value=pos;
+
+document.getElementById("fwdJogPosition").innerHTML=pos;
+
+}
+else
+{
+
+document.getElementById("newBackward").value=pos;
+
+document.getElementById("bwdJogPosition").innerHTML=pos;
+
+}
+
+
+});
+
+
+}
+
+
+
+
+
+
+
+
+
+function updateStatus()
+{
+
+
+fetch("/status")
+
+.then(r=>r.json())
+
+.then(s=>
+{
+
+
+if(s.error)
+{
+
+console.log("Waiting Arduino status:", s.error);
+
+return;
+
+}
+
+
+
+document.getElementById("machineStatus").innerHTML=
+s.state;
+
+
+
+document.getElementById("position").innerHTML=
+s.position;
+
+
+
+document.getElementById("homed").innerHTML=
+s.homed ? "YES" : "NO";
+
+
+
+document.getElementById("forwardLimit").innerHTML=
+s.forward;
+
+
+
+document.getElementById("backwardLimit").innerHTML=
+s.backward;
+
+
+
+// keep the jog panels' live position readouts in sync
+
+document.getElementById("fwdJogPosition").innerHTML=
+s.position;
+
+
+document.getElementById("bwdJogPosition").innerHTML=
+s.position;
+
+
+
+
+
+let light=
+document.getElementById("statusLight");
+
+
+
+if(s.state=="READY")
+{
+
+light.style.background="#22c55e";
+
+}
+
+
+
+else if(s.state=="EMERGENCY STOP")
+{
+
+light.style.background="#ef4444";
+
+}
+
+
+
+else
+{
+
+light.style.background="#facc15";
+
+}
+
+
+}
+)
+
+
+.catch(e=>
+console.log("Waiting Arduino status")
+);
+
+
+}
+
+
+
+
+
+
+setInterval(
+updateStatus,
+1000
+);
+
+
+
+updateStatus();
+
+
+
+</script>
+
+
+
+</body>
+
+</html>

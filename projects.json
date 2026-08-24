@@ -1,0 +1,14 @@
+{
+    "H7": {
+        "forward": 54753,
+        "backward": 35000
+    },
+    "ESC": {
+        "forward": 25000,
+        "backward": -3000
+    },
+    "Test": {
+        "forward": 35487,
+        "backward": 22529
+    }
+}

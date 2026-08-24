@@ -1,0 +1,87 @@
+<html>
+
+<body style="background:#111;color:white;text-align:center;font-family:Arial">
+
+
+<h1>
+ADD PROJECT
+</h1>
+
+
+<input id="name" placeholder="Machine Name">
+
+<br><br>
+
+
+<input id="forward" placeholder="Forward Steps">
+
+<br><br>
+
+
+<input id="backward" placeholder="Backward Steps">
+
+
+<br><br>
+
+
+<button onclick="save()">
+
+SAVE
+
+</button>
+
+
+
+<script>
+
+
+function save(){
+
+
+fetch("/add_project",
+{
+
+method:"POST",
+
+headers:
+{
+"Content-Type":
+"application/json"
+},
+
+
+body:JSON.stringify({
+
+name:
+document.getElementById("name").value,
+
+
+forward:
+document.getElementById("forward").value,
+
+
+backward:
+document.getElementById("backward").value
+
+
+})
+
+
+})
+
+
+
+alert("Saved")
+
+
+
+}
+
+
+
+</script>
+
+
+</body>
+
+</html>
