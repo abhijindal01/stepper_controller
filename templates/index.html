@@ -1,2087 +1,2120 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
-
-<title>Stepper Controller</title>
-
+<meta charset="utf-8">
+<title>Stepper Control Console · Dual-Axis RPi</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-
-
 <style>
+:root {
+    --bg-canvas: #090d16;
+    --bg-surface: #111827;
+    --bg-elevated: #172033;
+    --bg-inset: #0b101d;
+    --border-subtle: rgba(148, 163, 184, 0.14);
+    --border-strong: rgba(148, 163, 184, 0.26);
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --text-muted: #64748b;
 
-body
-{
-    margin:0;
-    font-family:Arial;
-    background:#0f172a;
-    color:white;
+    --blue: #2563eb;
+    --blue-hover: #1d4ed8;
+    --blue-soft: rgba(59, 130, 246, 0.14);
+    --blue-text: #93c5fd;
+
+    --green: #16a34a;
+    --green-hover: #15803d;
+    --green-soft: rgba(34, 197, 94, 0.14);
+    --green-text: #86efac;
+
+    --amber: #d97706;
+    --amber-hover: #b45309;
+    --amber-soft: rgba(245, 158, 11, 0.15);
+    --amber-text: #fcd34d;
+
+    --red: #dc2626;
+    --red-hover: #b91c1c;
+    --red-soft: rgba(239, 68, 68, 0.15);
+    --red-text: #fca5a5;
+
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-
-.header
-{
-    background:#020617;
-    padding:20px;
-    text-align:center;
-    font-size:32px;
-    font-weight:bold;
-    position:relative;
+* {
+    box-sizing: border-box;
 }
 
-
-.logout
-{
-    position:absolute;
-    right:20px;
-    top:50%;
-    transform:translateY(-50%);
-    font-size:16px;
-    color:#38bdf8;
-    text-decoration:none;
+body {
+    margin: 0;
+    background: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
 }
 
-
-
-.container
-{
-    display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
-    gap:20px;
-    padding:20px;
+/* ==================== TOP COMMAND BAR ==================== */
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: rgba(9, 13, 22, 0.9);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
 }
 
-
-
-.card
-{
-    background:#1e293b;
-    border-radius:15px;
-    padding:20px;
-    box-shadow:0 0 15px black;
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
 }
 
-
-
-h2
-{
-    color:#38bdf8;
+.brand-mark {
+    width: 36px;
+    height: 36px;
+    border-radius: 9px;
+    background: var(--blue-soft);
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    color: #60a5fa;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
 }
 
-
-
-button
-{
-    width:100%;
-    padding:15px;
-    margin:5px 0;
-    border-radius:10px;
-    border:none;
-    font-size:18px;
-    cursor:pointer;
+.brand-title {
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    margin: 0;
 }
 
-
-
-.green
-{
-background:#16a34a;
-color:white;
+.brand-subtitle {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin: 1px 0 0;
 }
 
-
-.red
-{
-background:#dc2626;
-color:white;
+.topbar-pills {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
-
-.blue
-{
-background:#2563eb;
-color:white;
+.port-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    font-size: 12px;
+    color: var(--text-secondary);
 }
 
-
-.orange
-{
-background:#ea580c;
-color:white;
+.port-pill code {
+    font-family: var(--mono);
+    color: var(--text-primary);
+    font-size: 11.5px;
 }
 
-
-.gray
-{
-background:#475569;
-color:white;
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
 }
 
-
-
-input,select
-{
-width:100%;
-padding:12px;
-margin:5px 0;
-border-radius:8px;
-font-size:16px;
-box-sizing:border-box;
+.dot.online {
+    background: #22c55e;
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.55);
 }
 
-
-input[readonly]
-{
-background:#334155;
-color:#94a3b8;
+.dot.offline {
+    background: #ef4444;
 }
 
-
-
-.light
-{
-width:30px;
-height:30px;
-border-radius:50%;
-display:inline-block;
-background:#facc15;
-vertical-align:middle;
+.dot.busy {
+    background: #f59e0b;
+    box-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
 }
 
-
-
-.value
-{
-font-size:25px;
-color:#facc15;
+.topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
-
-
-.status-line
-{
-font-size:22px;
+/* ==================== LAYOUT ==================== */
+.workspace {
+    max-width: 1560px;
+    margin: 0 auto;
+    padding: 20px 24px 48px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
 }
 
-
-
-.limit-group
-{
-margin-bottom:15px;
-padding-bottom:10px;
-border-bottom:1px solid #334155;
+.motors-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 20px;
+    align-items: start;
 }
 
-
-.limit-group label
-{
-display:block;
-font-size:14px;
-color:#94a3b8;
-margin-bottom:5px;
+@media (max-width: 1080px) {
+    .motors-grid {
+        grid-template-columns: 1fr;
+    }
+    .topbar {
+        padding: 12px 16px;
+    }
+    .workspace {
+        padding: 16px 14px 40px;
+    }
 }
 
-
-.mode-toggle
-{
-display:flex;
-gap:5px;
+/* ==================== PANEL / CARD ==================== */
+.motor-panel,
+.stlink-panel {
+    background: var(--bg-surface);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    overflow: hidden;
 }
 
-
-.mode-btn
-{
-flex:1;
-padding:8px;
-font-size:14px;
-margin:5px 0;
-border-radius:8px;
-border:none;
-background:#334155;
-color:#94a3b8;
-cursor:pointer;
+.panel-header {
+    padding: 16px 20px;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent);
+    border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
 }
 
-
-.mode-btn.active
-{
-background:#2563eb;
-color:white;
+.axis-identity {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
 }
 
-
-.jog-panel
-{
-background:#0f172a;
-border-radius:10px;
-padding:10px;
-margin-top:5px;
+.axis-tag {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    font-family: var(--mono);
+    font-weight: 700;
+    font-size: 13.5px;
+    color: var(--blue-text);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
 }
 
-
-.jog-panel p
-{
-margin:5px 0;
-font-size:15px;
+.axis-heading h2 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
-
-.jog-position
-{
-color:#facc15;
-font-weight:bold;
+.port-badge {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 6px;
+    background: var(--bg-inset);
+    border: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
 }
 
-
-
-.hw-row
-{
-display:flex;
-align-items:center;
-gap:10px;
-margin:12px 0;
-font-size:18px;
+.purpose-row {
+    margin-top: 3px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-secondary);
+    font-size: 12.5px;
 }
 
-
-.hw-label
-{
-flex:1;
+.purpose-edit-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    padding: 2px 5px;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 11.5px;
 }
 
-
-.hw-value
-{
-color:#facc15;
-font-weight:bold;
+.purpose-edit-btn:hover {
+    color: var(--blue-text);
+    background: var(--blue-soft);
 }
 
-
-
-.stlink-log
-{
-width:100%;
-height:160px;
-margin-top:10px;
-padding:10px;
-box-sizing:border-box;
-border-radius:8px;
-border:1px solid #334155;
-background:#020617;
-color:#94a3b8;
-font-family:ui-monospace,monospace;
-font-size:12px;
-resize:vertical;
-white-space:pre-wrap;
+.header-badges {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
 }
 
-
-
-.stlink-hint
-{
-font-size:14px;
-color:#94a3b8;
-margin:8px 0 12px;
-line-height:1.4;
+.state-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 11px;
+    border-radius: 999px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-inset);
+    color: var(--text-secondary);
 }
 
-
-
-.btn-row
-{
-display:flex;
-gap:8px;
-flex-wrap:wrap;
+.state-badge.ready {
+    background: var(--green-soft);
+    border-color: rgba(34, 197, 94, 0.35);
+    color: var(--green-text);
 }
 
-
-.btn-row button
-{
-flex:1;
-min-width:120px;
+.state-badge.moving {
+    background: var(--amber-soft);
+    border-color: rgba(245, 158, 11, 0.38);
+    color: var(--amber-text);
 }
 
-
-
-
-/* ---- axis selector (two Arduinos) ---- */
-.axisbar{
-display:flex;
-gap:10px;
-justify-content:center;
-flex-wrap:wrap;
-padding:12px 16px 0 16px;
+.state-badge.estop,
+.state-badge.offline {
+    background: var(--red-soft);
+    border-color: rgba(239, 68, 68, 0.38);
+    color: var(--red-text);
 }
 
-.axisbtn{
-display:flex;
-align-items:center;
-gap:8px;
-padding:10px 20px;
-border-radius:10px;
-border:2px solid #475569;
-background:transparent;
-color:inherit;
-font-size:16px;
-font-weight:600;
-cursor:pointer;
+.panel-body {
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
 }
 
-.axisbtn.active{
-border-color:#3b82f6;
-background:rgba(59,130,246,0.18);
+.offline-banner {
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    background: rgba(239, 68, 68, 0.09);
+    border: 1px solid rgba(239, 68, 68, 0.28);
+    color: var(--red-text);
+    font-size: 12.5px;
 }
 
-.axisdot{
-width:10px;
-height:10px;
-border-radius:50%;
-background:#64748b;
-display:inline-block;
+.offline-banner.visible {
+    display: flex;
 }
 
-.axisdot.ok{ background:#22c55e; }
-.axisdot.bad{ background:#ef4444; }
+/* ==================== TELEMETRY & GAUGE ==================== */
+.telemetry-box {
+    background: var(--bg-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px;
+    padding: 14px 16px;
+}
 
-.axiswarn{
-text-align:center;
-color:#fca5a5;
-font-size:13px;
-padding:6px 16px 0 16px;
-min-height:18px;
+.telemetry-top {
+    display: grid;
+    grid-template-columns: 1.3fr 1fr 1fr;
+    gap: 12px;
+    align-items: center;
+}
+
+@media (max-width: 560px) {
+    .telemetry-top {
+        grid-template-columns: 1fr 1fr;
+    }
+}
+
+.metric-label {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin-bottom: 3px;
+}
+
+.metric-pos {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 26px;
+    font-weight: 700;
+    color: var(--text-primary);
+    letter-spacing: -0.02em;
+}
+
+.metric-pos small {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    margin-left: 4px;
+}
+
+.metric-val {
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.pill-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 9px;
+    border-radius: 6px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    font-weight: 600;
+}
+
+.pill-tag.ok {
+    background: var(--green-soft);
+    color: var(--green-text);
+}
+
+.pill-tag.warn {
+    background: var(--amber-soft);
+    color: var(--amber-text);
+}
+
+.pill-tag.info {
+    background: var(--blue-soft);
+    color: var(--blue-text);
+}
+
+/* Travel range bar */
+.travel-wrap {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.travel-labels {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    font-size: 11.5px;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.travel-track {
+    position: relative;
+    height: 10px;
+    border-radius: 999px;
+    background: #1a2438;
+    border: 1px solid var(--border-subtle);
+    overflow: hidden;
+}
+
+.travel-origin {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background: rgba(148, 163, 184, 0.35);
+    left: 50%;
+}
+
+.travel-fill {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, #2563eb, #38bdf8);
+    border-radius: 999px;
+    transition: width 0.25s ease, left 0.25s ease;
+}
+
+.travel-thumb {
+    position: absolute;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #f8fafc;
+    border: 2px solid #38bdf8;
+    transform: translate(-50%, -50%);
+    transition: left 0.25s ease;
+}
+
+/* Digital switch strip */
+.io-strip {
+    margin-top: 12px;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+}
+
+.io-chip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 5px 8px;
+    border-radius: 7px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-subtle);
+    font-size: 11px;
+    color: var(--text-muted);
+    font-family: var(--mono);
+}
+
+.io-chip strong {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.io-chip.active {
+    background: var(--amber-soft);
+    border-color: rgba(245, 158, 11, 0.35);
+    color: var(--amber-text);
+}
+
+.io-chip.active strong {
+    color: var(--amber-text);
+}
+
+.io-chip.danger {
+    background: var(--red-soft);
+    border-color: rgba(239, 68, 68, 0.4);
+    color: var(--red-text);
+}
+
+.io-chip.danger strong {
+    color: var(--red-text);
+}
+
+/* ==================== SECTIONS & BUTTONS ==================== */
+.section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.section-title {
+    font-size: 11.5px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    margin: 0;
+}
+
+.section-caption {
+    font-size: 11.5px;
+    color: var(--text-muted);
+}
+
+.btn-grid-3 {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 8px;
+}
+
+.btn-grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.btn-grid-equal-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+@media (max-width: 520px) {
+    .btn-grid-equal-3 {
+        grid-template-columns: 1fr;
+    }
+    .io-strip {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 9.5px 13px;
+    border-radius: 9px;
+    border: 1px solid var(--border-subtle);
+    background: var(--bg-elevated);
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+    transition: background 0.14s ease, border-color 0.14s ease, transform 0.06s ease;
+    text-decoration: none;
+    white-space: nowrap;
+}
+
+.btn:hover {
+    background: #1f2b44;
+    border-color: var(--border-strong);
+}
+
+.btn:active {
+    transform: translateY(1px);
+}
+
+.btn-sm {
+    padding: 6px 10px;
+    font-size: 12px;
+    border-radius: 7px;
+}
+
+.btn-primary {
+    background: var(--blue);
+    border-color: rgba(96, 165, 250, 0.35);
+    color: #ffffff;
+}
+
+.btn-primary:hover {
+    background: var(--blue-hover);
+}
+
+.btn-success {
+    background: rgba(22, 163, 74, 0.18);
+    border-color: rgba(34, 197, 94, 0.38);
+    color: #bbf7d0;
+}
+
+.btn-success:hover {
+    background: rgba(22, 163, 74, 0.3);
+}
+
+.btn-amber {
+    background: rgba(217, 119, 6, 0.18);
+    border-color: rgba(245, 158, 11, 0.38);
+    color: #fde68a;
+}
+
+.btn-amber:hover {
+    background: rgba(217, 119, 6, 0.3);
+}
+
+.btn-danger {
+    background: rgba(220, 38, 38, 0.18);
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #fecaca;
+}
+
+.btn-danger:hover {
+    background: rgba(220, 38, 38, 0.32);
+}
+
+.btn-danger-solid {
+    background: var(--red);
+    border-color: rgba(252, 165, 165, 0.35);
+    color: #ffffff;
+}
+
+.btn-danger-solid:hover {
+    background: var(--red-hover);
+}
+
+.btn.holding {
+    background: var(--blue);
+    border-color: #93c5fd;
+    color: #ffffff;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.28);
+}
+
+/* ==================== PRESETS / PROJECTS ==================== */
+.presets-box {
+    background: var(--bg-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: 11px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.preset-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+select,
+input[type="text"],
+input[type="number"] {
+    width: 100%;
+    padding: 9px 11px;
+    border-radius: 8px;
+    border: 1px solid var(--border-subtle);
+    background: #0d1424;
+    color: var(--text-primary);
+    font-family: var(--sans);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.14s ease;
+}
+
+select:focus,
+input[type="text"]:focus,
+input[type="number"]:focus {
+    border-color: #3b82f6;
+}
+
+input[readonly] {
+    background: #141d30;
+    color: var(--text-secondary);
+}
+
+.preset-drawer {
+    display: none;
+    padding-top: 10px;
+    border-top: 1px solid var(--border-subtle);
+    flex-direction: column;
+    gap: 10px;
+}
+
+.preset-drawer.open {
+    display: flex;
+}
+
+.limit-field-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+@media (max-width: 520px) {
+    .limit-field-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.limit-card {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.limit-card-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+}
+
+.limit-card-top label {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.mini-link {
+    background: transparent;
+    border: none;
+    color: var(--blue-text);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 5px;
+    border-radius: 4px;
+}
+
+.mini-link:hover {
+    background: var(--blue-soft);
+}
+
+.jog-capture-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+}
+
+.persistence-note {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    background: rgba(59, 130, 246, 0.06);
+    border: 1px solid rgba(59, 130, 246, 0.15);
+}
+
+/* ==================== ST-LINK PANEL ==================== */
+.stlink-grid {
+    display: grid;
+    grid-template-columns: 1.05fr 1.35fr;
+    gap: 18px;
+    align-items: start;
+}
+
+@media (max-width: 960px) {
+    .stlink-grid {
+        grid-template-columns: 1fr;
+    }
+}
+
+.stlink-controls {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.stlink-form-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+@media (max-width: 560px) {
+    .stlink-form-row {
+        grid-template-columns: 1fr;
+    }
+}
+
+.field-group label {
+    display: block;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 5px;
+}
+
+.stlink-log {
+    width: 100%;
+    min-height: 225px;
+    padding: 12px;
+    border-radius: 10px;
+    border: 1px solid var(--border-subtle);
+    background: #060911;
+    color: #cbd5e1;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.5;
+    resize: vertical;
+    white-space: pre-wrap;
+}
+
+/* ==================== TOASTS & MODAL ==================== */
+.toast-stack {
+    position: fixed;
+    right: 20px;
+    bottom: 20px;
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 380px;
+}
+
+.toast {
+    padding: 11px 15px;
+    border-radius: 10px;
+    background: #172135;
+    border: 1px solid var(--border-strong);
+    color: var(--text-primary);
+    font-size: 13px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    animation: slideIn 0.16s ease-out;
+}
+
+.toast.ok {
+    border-left: 3px solid #22c55e;
+}
+
+.toast.err {
+    border-left: 3px solid #ef4444;
+}
+
+.toast.info {
+    border-left: 3px solid #3b82f6;
+}
+
+@keyframes slideIn {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(3, 7, 18, 0.72);
+    backdrop-filter: blur(4px);
+    z-index: 90;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+}
+
+.modal-backdrop.open {
+    display: flex;
+}
+
+.modal-card {
+    width: 100%;
+    max-width: 420px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-strong);
+    border-radius: 14px;
+    padding: 22px;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
+}
+
+.modal-card h3 {
+    margin: 0 0 8px;
+    font-size: 16px;
+}
+
+.modal-card p {
+    margin: 0 0 18px;
+    color: var(--text-secondary);
+    font-size: 13.5px;
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
 }
 </style>
-
 </head>
-
-
-
 <body>
 
+<!-- ==================== TOP COMMAND BAR ==================== -->
+<header class="topbar">
+    <div class="brand">
+        <div class="brand-mark">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+        </div>
+        <div>
+            <h1 class="brand-title">STEPPER CONTROL CONSOLE</h1>
+            <p class="brand-subtitle">1 Raspberry Pi · 2 Hardcoded Arduinos · EEPROM State Persistence</p>
+        </div>
+    </div>
 
-<div class="header">
+    <div class="topbar-pills">
+        {% for m in motors %}
+        <div class="port-pill" id="topPill-{{ m.id }}">
+            <span class="dot {{ 'online' if m.connected else 'offline' }}" id="topDot-{{ m.id }}"></span>
+            <strong>{{ m.name }}</strong>
+            <code>{{ m.port }}</code>
+            <span id="topState-{{ m.id }}">{{ 'ONLINE' if m.connected else 'OFFLINE' }}</span>
+        </div>
+        {% endfor %}
+    </div>
 
-STEPPER CONTROLLER
+    <div class="topbar-actions">
+        <button type="button" class="btn btn-sm" onclick="reconnectAll()">
+            Reconnect Ports
+        </button>
+        <button type="button" class="btn btn-sm btn-danger-solid" onclick="estopAll()">
+            E-STOP ALL
+        </button>
+        <a class="btn btn-sm" href="/logout">Sign Out</a>
+    </div>
+</header>
 
-<a class="logout" href="/logout">Logout</a>
+<!-- ==================== MAIN WORKSPACE ==================== -->
+<main class="workspace">
 
+    <!-- SIDE-BY-SIDE DUAL MOTOR MODULES -->
+    <div class="motors-grid">
+        {% for m in motors %}
+        {% set mid = m.id %}
+        {% set mprojects = projects.get(mid, {}) %}
+        <section class="motor-panel" id="panel-{{ mid }}" data-motor-id="{{ mid }}">
+            <!-- Panel Header -->
+            <div class="panel-header">
+                <div class="axis-identity">
+                    <div class="axis-tag">M{{ loop.index }}</div>
+                    <div class="axis-heading">
+                        <h2>
+                            {{ m.name }}
+                            <span class="port-badge">{{ m.port }}</span>
+                        </h2>
+                        <div class="purpose-row">
+                            <span>Purpose:</span>
+                            <strong id="purposeText-{{ mid }}">{{ m.purpose }}</strong>
+                            <button type="button" class="purpose-edit-btn" onclick="openPurposeModal('{{ mid }}')" title="Set desired purpose label">
+                                Rename
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="header-badges">
+                    <button type="button" class="btn btn-sm" onclick="reconnectMotor('{{ mid }}')" title="Reconnect hardcoded Arduino port">
+                        Reconnect
+                    </button>
+                    <span class="state-badge {{ 'ready' if m.connected else 'offline' }}" id="stateBadge-{{ mid }}">
+                        <span class="dot {{ 'online' if m.connected else 'offline' }}" id="stateDot-{{ mid }}"></span>
+                        <span id="stateText-{{ mid }}">{{ 'STARTING' if m.connected else 'OFFLINE' }}</span>
+                    </span>
+                </div>
+            </div>
+
+            <div class="panel-body">
+                <!-- Disconnected warning -->
+                <div class="offline-banner {{ '' if m.connected else 'visible' }}" id="offlineBanner-{{ mid }}">
+                    <span id="offlineMsg-{{ mid }}">Arduino offline on {{ m.port }}{% if m.error %} — {{ m.error }}{% endif %}</span>
+                    <button type="button" class="btn btn-sm" onclick="reconnectMotor('{{ mid }}')">Retry</button>
+                </div>
+
+                <!-- Live Telemetry + Travel Range -->
+                <div class="telemetry-box">
+                    <div class="telemetry-top">
+                        <div>
+                            <div class="metric-label">Current Position</div>
+                            <div class="metric-pos">
+                                <span id="pos-{{ mid }}">0</span><small>steps</small>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="metric-label">Reference Status</div>
+                            <div>
+                                <span class="pill-tag warn" id="homedBadge-{{ mid }}">UNHOMED</span>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="metric-label">Active Preset</div>
+                            <div>
+                                <span class="pill-tag info" id="activePreset-{{ mid }}">{{ m.active_project or 'Manual / Default' }}</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="travel-wrap">
+                        <div class="travel-labels">
+                            <span>BWD: <strong id="bwdLim-{{ mid }}">-{{ "{:,}".format(clear_limit_steps) }}</strong></span>
+                            <span>ORIGIN: 0</span>
+                            <span>FWD: <strong id="fwdLim-{{ mid }}">+{{ "{:,}".format(clear_limit_steps) }}</strong></span>
+                        </div>
+                        <div class="travel-track">
+                            <div class="travel-origin" id="originTick-{{ mid }}"></div>
+                            <div class="travel-fill" id="travelFill-{{ mid }}" style="left:50%;width:0%;"></div>
+                            <div class="travel-thumb" id="travelThumb-{{ mid }}" style="left:50%;"></div>
+                        </div>
+                    </div>
+
+                    <div class="io-strip">
+                        <div class="io-chip" id="ioHome-{{ mid }}">
+                            <span>HOME SW</span><strong id="ioHomeVal-{{ mid }}">--</strong>
+                        </div>
+                        <div class="io-chip" id="ioBwd-{{ mid }}">
+                            <span>BWD SW</span><strong id="ioBwdVal-{{ mid }}">--</strong>
+                        </div>
+                        <div class="io-chip" id="ioFwd-{{ mid }}">
+                            <span>FWD SW</span><strong id="ioFwdVal-{{ mid }}">--</strong>
+                        </div>
+                        <div class="io-chip" id="ioEstop-{{ mid }}">
+                            <span>E-STOP</span><strong id="ioEstopVal-{{ mid }}">--</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Motion Control -->
+                <div class="section">
+                    <div class="section-head">
+                        <h3 class="section-title">Motion Control</h3>
+                        <span class="section-caption">Travel to limit or hold to jog</span>
+                    </div>
+
+                    <div class="btn-grid-3">
+                        <button type="button" class="btn btn-amber" onclick="motorAction('{{ mid }}', 'jog_backward', 'Moving toward backward limit')">
+                            &#9664; To Backward Limit
+                        </button>
+                        <button type="button" class="btn" onclick="motorAction('{{ mid }}', 'stop', 'Stopped')">
+                            &#9632; Stop
+                        </button>
+                        <button type="button" class="btn btn-success" onclick="motorAction('{{ mid }}', 'jog_forward', 'Moving toward forward limit')">
+                            To Forward Limit &#9654;
+                        </button>
+                    </div>
+
+                    <div class="btn-grid-2">
+                        <button
+                            type="button"
+                            class="btn hold-jog-btn"
+                            data-motor="{{ mid }}"
+                            data-dir="backward"
+                        >
+                            &#9664;&#9664; Hold Manual Backward
+                        </button>
+                        <button
+                            type="button"
+                            class="btn hold-jog-btn"
+                            data-motor="{{ mid }}"
+                            data-dir="forward"
+                        >
+                            Hold Manual Forward &#9654;&#9654;
+                        </button>
+                    </div>
+
+                    <div class="btn-grid-2">
+                        <button type="button" class="btn btn-primary" onclick="motorAction('{{ mid }}', 'home', 'Homing sequence started')">
+                            &#8962; Home Axis
+                        </button>
+                        <button type="button" class="btn btn-danger" onclick="motorAction('{{ mid }}', 'estop', 'Emergency stop engaged')">
+                            &#9888; Emergency Stop
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Limit & EEPROM Reboot Persistence -->
+                <div class="section">
+                    <div class="section-head">
+                        <h3 class="section-title">Travel Limits &amp; Reboot Persistence</h3>
+                        <span class="section-caption">Clear range: &plusmn;{{ "{:,}".format(clear_limit_steps) }} steps</span>
+                    </div>
+
+                    <div class="btn-grid-equal-3">
+                        <button type="button" class="btn btn-sm" onclick="motorAction('{{ mid }}', 'save_backward', 'Saved current position as backward limit')">
+                            Set Backward Here
+                        </button>
+                        <button type="button" class="btn btn-sm" onclick="motorAction('{{ mid }}', 'save_forward', 'Saved current position as forward limit')">
+                            Set Forward Here
+                        </button>
+                        <button type="button" class="btn btn-sm btn-danger" onclick="confirmClearLimits('{{ mid }}')">
+                            Clear (&plusmn;{{ "{:,}".format(clear_limit_steps) }})
+                        </button>
+                    </div>
+
+                    <div class="btn-grid-2">
+                        <button type="button" class="btn btn-sm" onclick="motorAction('{{ mid }}', 'save_position', 'Current position saved to EEPROM')">
+                            Save Position Now
+                        </button>
+                        <button type="button" class="btn btn-sm" onclick="confirmResetState('{{ mid }}')">
+                            Reset Stored State
+                        </button>
+                    </div>
+
+                    <div class="persistence-note">
+                        <span>EEPROM auto-backups position, homed status &amp; limits across Arduino reboots.</span>
+                    </div>
+                </div>
+
+                <!-- Independent Per-Motor Presets -->
+                <div class="section">
+                    <div class="section-head">
+                        <h3 class="section-title">Project Presets ({{ m.name }})</h3>
+                        <button type="button" class="btn btn-sm" onclick="togglePresetDrawer('{{ mid }}')" id="drawerToggle-{{ mid }}">
+                            + New / Edit Preset
+                        </button>
+                    </div>
+
+                    <div class="presets-box">
+                        <div class="preset-row">
+                            <select id="projectSelect-{{ mid }}">
+                                {% if mprojects %}
+                                    {% for pname, pdata in mprojects.items() %}
+                                    <option value="{{ pname }}" {% if m.active_project == pname %}selected{% endif %}>
+                                        {{ pname }}  [BWD: {{ pdata.backward }} → FWD: {{ pdata.forward }}]
+                                    </option>
+                                    {% endfor %}
+                                {% else %}
+                                    <option value="">(No saved presets for {{ m.name }})</option>
+                                {% endif %}
+                            </select>
+                            <button type="button" class="btn btn-primary" onclick="loadProject('{{ mid }}')">
+                                Load
+                            </button>
+                            <button type="button" class="btn btn-danger" onclick="confirmDeleteProject('{{ mid }}')" title="Delete selected preset">
+                                Delete
+                            </button>
+                        </div>
+
+                        <!-- Create / Update Preset Drawer -->
+                        <div class="preset-drawer" id="presetDrawer-{{ mid }}">
+                            <div>
+                                <input type="text" id="newName-{{ mid }}" placeholder="Preset name (e.g. H7, ESC, Jig-A)">
+                            </div>
+
+                            <div class="limit-field-grid">
+                                <!-- Backward Limit Field -->
+                                <div class="limit-card">
+                                    <div class="limit-card-top">
+                                        <label for="newBackward-{{ mid }}">Backward Limit (steps)</label>
+                                        <button type="button" class="mini-link" onclick="fillCurrentPos('{{ mid }}', 'backward')">
+                                            Use Current
+                                        </button>
+                                    </div>
+                                    <input type="number" id="newBackward-{{ mid }}" placeholder="-85000">
+                                    <div class="jog-capture-row">
+                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="backward" data-target="backward">
+                                            Hold &#9664;
+                                        </button>
+                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="forward" data-target="backward">
+                                            Hold &#9654;
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <!-- Forward Limit Field -->
+                                <div class="limit-card">
+                                    <div class="limit-card-top">
+                                        <label for="newForward-{{ mid }}">Forward Limit (steps)</label>
+                                        <button type="button" class="mini-link" onclick="fillCurrentPos('{{ mid }}', 'forward')">
+                                            Use Current
+                                        </button>
+                                    </div>
+                                    <input type="number" id="newForward-{{ mid }}" placeholder="85000">
+                                    <div class="jog-capture-row">
+                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="backward" data-target="forward">
+                                            Hold &#9664;
+                                        </button>
+                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="forward" data-target="forward">
+                                            Hold &#9654;
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="btn-grid-2">
+                                <button type="button" class="btn" onclick="togglePresetDrawer('{{ mid }}')">
+                                    Cancel
+                                </button>
+                                <button type="button" class="btn btn-success" onclick="saveProject('{{ mid }}')">
+                                    Save Preset
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+        {% endfor %}
+    </div>
+
+    <!-- ==================== ST-LINK / STM32H743 PROGRAMMING ==================== -->
+    <section class="stlink-panel">
+        <div class="panel-header">
+            <div class="axis-identity">
+                <div class="axis-tag">SWD</div>
+                <div class="axis-heading">
+                    <h2>
+                        ST-LINK / STM32H743 Fixture Programming
+                        <span class="port-badge">OpenOCD · No NRST</span>
+                    </h2>
+                    <div class="purpose-row">
+                        Seat pogo contact (forward limit), probe SWD, flash &amp; verify firmware, then soft-run or mechanical power-cycle.
+                    </div>
+                </div>
+            </div>
+
+            <div class="header-badges">
+                <span class="state-badge" id="stlinkUsbBadge">
+                    <span class="dot" id="stlinkUsbDot"></span>
+                    <span>USB: <strong id="stlinkUsbText">--</strong></span>
+                </span>
+                <span class="state-badge" id="stlinkSwdBadge">
+                    <span class="dot" id="stlinkSwdDot"></span>
+                    <span>SWD: <strong id="stlinkSwdText">IDLE</strong></span>
+                </span>
+                <span class="state-badge">
+                    <span>VTarget: <strong id="stlinkVoltage">--</strong></span>
+                </span>
+            </div>
+        </div>
+
+        <div class="panel-body">
+            <div class="stlink-grid">
+                <div class="stlink-controls">
+                    <div class="stlink-form-row">
+                        <div class="field-group">
+                            <label for="stlinkMotor">Contact Fixture Axis</label>
+                            <select id="stlinkMotor">
+                                {% for m in motors %}
+                                <option value="{{ m.id }}" {% if m.id == stlink_default_motor %}selected{% endif %}>
+                                    {{ m.name }} ({{ m.port }})
+                                </option>
+                                {% endfor %}
+                            </select>
+                        </div>
+
+                        <div class="field-group">
+                            <label for="stlinkBase">.bin Base Address (ignored for .hex)</label>
+                            <select id="stlinkBase">
+                                <option value="">Auto (combined → 0x08000000, app → 0x08020000)</option>
+                                <option value="0x08000000">0x08000000 · Combined / Bootloader</option>
+                                <option value="0x08020000">0x08020000 · App Only (BL present)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="field-group">
+                        <label for="stlinkImage">Firmware Image (`firmware/indi_h743/`)</label>
+                        <select id="stlinkImage">
+                            <option value="">Scanning firmware directory…</option>
+                        </select>
+                    </div>
+
+                    <div class="btn-grid-equal-3">
+                        <button type="button" class="btn" onclick="stlinkContact()">
+                            1. Seat Contact
+                        </button>
+                        <button type="button" class="btn" onclick="stlinkProbe()">
+                            2. Probe SWD
+                        </button>
+                        <button type="button" class="btn btn-success" onclick="stlinkFlash()">
+                            3. Flash Image
+                        </button>
+                    </div>
+
+                    <div class="btn-grid-2">
+                        <button type="button" class="btn btn-amber" onclick="stlinkSoftRun()">
+                            4a. Soft Run
+                        </button>
+                        <button type="button" class="btn btn-amber" onclick="stlinkPowerCycle()">
+                            4b. Power Cycle (Bwd → Fwd)
+                        </button>
+                    </div>
+
+                    <div class="btn-grid-3">
+                        <button type="button" class="btn btn-primary" style="grid-column: span 2;" onclick="confirmFullProgram()">
+                            Run Full Sequence: Contact → Probe → Flash → Power Cycle
+                        </button>
+                        <button type="button" class="btn" onclick="clearStlinkLog()">
+                            Clear Log
+                        </button>
+                    </div>
+                </div>
+
+                <div>
+                    <textarea
+                        id="stlinkLog"
+                        class="stlink-log"
+                        readonly
+                        placeholder="OpenOCD &amp; fixture programming output will appear here…"
+                    ></textarea>
+                </div>
+            </div>
+        </div>
+    </section>
+
+</main>
+
+<!-- ==================== MODAL DIALOG ==================== -->
+<div class="modal-backdrop" id="modalBackdrop">
+    <div class="modal-card">
+        <h3 id="modalTitle">Confirm Action</h3>
+        <p id="modalBody"></p>
+        <div id="modalInputWrap" style="display:none; margin-bottom:16px;">
+            <input type="text" id="modalInput" placeholder="Enter motor purpose (e.g. H7 Pad-Test Fixture)">
+        </div>
+        <div class="modal-actions">
+            <button type="button" class="btn" onclick="closeModal()">Cancel</button>
+            <button type="button" class="btn btn-primary" id="modalConfirmBtn">Confirm</button>
+        </div>
+    </div>
 </div>
 
-
-<!-- AXIS SELECTOR: one tab per Arduino / stepper -->
-
-<div class="axisbar">
-
-{% for a in axes %}
-
-<button class="axisbtn"
-id="axisBtn{{a.id}}"
-onclick="setAxis('{{a.id}}')">
-
-<span class="axisdot" id="axisDot{{a.id}}"></span>
-
-{{a.label}}
-
-</button>
-
-{% endfor %}
-
-</div>
-
-<div class="axiswarn" id="axisWarn"></div>
-
-
-
-
-<div class="container">
-
-
-
-
-
-<!-- STATUS -->
-
-
-<div class="card">
-
-
-<h2>
-Machine Status
-<span id="axisTitle" style="font-weight:400;opacity:0.7"></span>
-</h2>
-
-
-<p class="status-line">
-
-<span id="statusLight"
-class="light">
-</span>
-
-
-<span id="machineStatus">
-STARTING
-</span>
-
-</p>
-
-
-
-<hr>
-
-
-<p>
-
-Position :
-
-<span class="value"
-id="position">
-
-0
-
-</span>
-
-</p>
-
-
-
-<p>
-
-Homed :
-
-<span id="homed">
-NO
-</span>
-
-</p>
-
-
-
-<p>
-
-Forward Limit :
-
-<span id="forwardLimit">
-0
-</span>
-
-</p>
-
-
-
-<p>
-
-Backward Limit :
-
-<span id="backwardLimit">
-0
-</span>
-
-</p>
-
-
-
-</div>
-
-
-
-
-
-
-<!-- PROJECTS -->
-
-
-<div class="card">
-
-
-<h2>
-Machine Projects
-</h2>
-
-
-<select id="projectSelect">
-
-
-{% for name,data in projects.items() %}
-
-<option value="{{name}}"
-data-axis="{{ data.get('axis', legacy_axis) }}">
-
-{{name}}
-
-</option>
-
-
-{% endfor %}
-
-
-</select>
-
-
-
-<button class="blue"
-onclick="loadProject()">
-
-LOAD PROJECT
-
-</button>
-
-
-
-</div>
-
-
-
-
-
-
-<!-- ADD PROJECT -->
-
-
-<div class="card">
-
-
-<h2>
-Add New Project
-</h2>
-
-
-
-<input id="newName"
-placeholder="Machine Name">
-
-
-
-<!-- FORWARD LIMIT -->
-
-<div class="limit-group">
-
-<label>Forward Limit</label>
-
-<div class="mode-toggle">
-
-<button type="button"
-class="mode-btn active"
-id="fwdTypeBtn"
-onclick="setMode('forward','type')">
-TYPE VALUE
-</button>
-
-<button type="button"
-class="mode-btn"
-id="fwdJogBtn"
-onclick="setMode('forward','jog')">
-JOG TO SET
-</button>
-
-</div>
-
-
-<input id="newForward"
-type="number"
-placeholder="Forward Steps">
-
-
-<div id="fwdJogPanel"
-class="jog-panel"
-style="display:none;">
-
-<p>
-Current Position :
-<span class="jog-position"
-id="fwdJogPosition">
-0
-</span>
-</p>
-
-<button class="green"
-onmousedown="startMove('forward')"
-onmouseup="stopMove('forward')"
-onmouseleave="stopMove('forward')"
-ontouchstart="startMove('forward')"
-ontouchend="stopMove('forward')">
-HOLD TO MOVE FORWARD
-</button>
-
-<button class="orange"
-onmousedown="startMove('backward')"
-onmouseup="stopMove('forward')"
-onmouseleave="stopMove('forward')"
-ontouchstart="startMove('backward')"
-ontouchend="stopMove('forward')">
-HOLD TO MOVE BACKWARD
-</button>
-
-</div>
-
-</div>
-
-
-
-<!-- BACKWARD LIMIT -->
-
-<div class="limit-group">
-
-<label>Backward Limit</label>
-
-<div class="mode-toggle">
-
-<button type="button"
-class="mode-btn active"
-id="bwdTypeBtn"
-onclick="setMode('backward','type')">
-TYPE VALUE
-</button>
-
-<button type="button"
-class="mode-btn"
-id="bwdJogBtn"
-onclick="setMode('backward','jog')">
-JOG TO SET
-</button>
-
-</div>
-
-
-<input id="newBackward"
-type="number"
-placeholder="Backward Steps">
-
-
-<div id="bwdJogPanel"
-class="jog-panel"
-style="display:none;">
-
-<p>
-Current Position :
-<span class="jog-position"
-id="bwdJogPosition">
-0
-</span>
-</p>
-
-<button class="green"
-onmousedown="startMove('forward')"
-onmouseup="stopMove('backward')"
-onmouseleave="stopMove('backward')"
-ontouchstart="startMove('forward')"
-ontouchend="stopMove('backward')">
-HOLD TO MOVE FORWARD
-</button>
-
-<button class="orange"
-onmousedown="startMove('backward')"
-onmouseup="stopMove('backward')"
-onmouseleave="stopMove('backward')"
-ontouchstart="startMove('backward')"
-ontouchend="stopMove('backward')">
-HOLD TO MOVE BACKWARD
-</button>
-
-</div>
-
-</div>
-
-
-
-<button class="green"
-onclick="addProject()">
-
-SAVE PROJECT
-
-</button>
-
-
-</div>
-
-
-
-
-
-
-
-<!-- CONTROL -->
-
-
-<div class="card">
-
-
-<h2>
-Machine Control
-</h2>
-
-
-
-<button class="blue"
-onclick="homeMachine()">
-
-HOME MACHINE
-
-</button>
-
-
-
-<button class="green"
-onclick="forwardMove()">
-
-FORWARD
-
-</button>
-
-
-
-<button class="orange"
-onclick="backwardMove()">
-
-BACKWARD
-
-</button>
-
-
-
-
-<button class="red"
-onclick="stopMachine()">
-
-EMERGENCY STOP
-
-</button>
-
-
-
-</div>
-
-
-
-
-
-
-<!-- LIMIT -->
-
-
-<div class="card">
-
-
-<h2>
-Limit Setting
-</h2>
-
-
-
-<button class="green"
-onclick="saveForward()">
-
-SAVE FORWARD LIMIT
-
-</button>
-
-
-
-<button class="orange"
-onclick="saveBackward()">
-
-SAVE BACKWARD LIMIT
-
-</button>
-
-
-
-<button class="red"
-onclick="clearLimits()">
-
-CLEAR LIMITS
-
-</button>
-
-
-
-</div>
-
-
-
-
-
-
-<!-- HARDWARE MONITOR -->
-
-
-<div class="card">
-
-
-<h2>
-Hardware Monitor
-</h2>
-
-
-
-<button class="blue"
-onclick="testBuzzer()">
-
-TEST BUZZER
-
-</button>
-
-
-
-<hr>
-
-
-
-<div class="hw-row">
-
-<span id="v45Light"
-class="light">
-</span>
-
-<span class="hw-label">
-4.5V Rail
-</span>
-
-<span id="v45Status"
-class="hw-value">
---
-</span>
-
-</div>
-
-
-
-<div class="hw-row">
-
-<span id="v9Light"
-class="light">
-</span>
-
-<span class="hw-label">
-9V Rail
-</span>
-
-<span id="v9Status"
-class="hw-value">
---
-</span>
-
-</div>
-
-
-
-<div class="hw-row">
-
-<span id="imuLight"
-class="light">
-</span>
-
-<span class="hw-label">
-IMU
-</span>
-
-<span id="imuStatus"
-class="hw-value">
---
-</span>
-
-</div>
-
-
-
-<div class="hw-row">
-
-<span id="spiLight"
-class="light">
-</span>
-
-<span class="hw-label">
-SPI Communication
-</span>
-
-<span id="spiStatus"
-class="hw-value">
---
-</span>
-
-</div>
-
-
-
-</div>
-
-
-
-
-
-
-<!-- ST-LINK / H7 PROGRAMMING -->
-
-
-<div class="card">
-
-
-<h2>
-ST-LINK / H7 Flash
-</h2>
-
-
-<p class="stlink-hint">
-No NRST on harness. Seat pogos (FORWARD contact), probe SWD, flash,
-then soft-run <em>or</em> power-cycle (BACKWARD → FORWARD).
-</p>
-
-
-
-<div class="hw-row">
-
-<span id="stlinkLight"
-class="light">
-</span>
-
-<span class="hw-label">
-ST-LINK USB
-</span>
-
-<span id="stlinkUsb"
-class="hw-value">
---
-</span>
-
-</div>
-
-
-
-<div class="hw-row">
-
-<span id="stlinkSwdLight"
-class="light">
-</span>
-
-<span class="hw-label">
-SWD / Target
-</span>
-
-<span id="stlinkSwd"
-class="hw-value">
---
-</span>
-
-</div>
-
-
-
-<div class="hw-row">
-
-<span class="hw-label">
-VTarget
-</span>
-
-<span id="stlinkVoltage"
-class="hw-value">
---
-</span>
-
-</div>
-
-
-
-<hr>
-
-
-
-<label style="color:#94a3b8;font-size:14px;">
-Flash image
-</label>
-
-<select id="stlinkImage">
-<option value="">(none on disk — copy firmware first)</option>
-</select>
-
-
-
-<label style="color:#94a3b8;font-size:14px;margin-top:8px;display:block;">
-.bin base address (ignored for .hex)
-</label>
-
-<select id="stlinkBase">
-<option value="">auto (combined→0x08000000, app→0x08020000)</option>
-<option value="0x08000000">0x08000000 combined / bootloader</option>
-<option value="0x08020000">0x08020000 app only (BL present)</option>
-</select>
-
-
-
-<div class="btn-row">
-
-<button class="blue"
-onclick="stlinkContact()">
-SEAT CONTACT
-</button>
-
-<button class="blue"
-onclick="stlinkProbe()">
-PROBE SWD
-</button>
-
-</div>
-
-
-
-<div class="btn-row">
-
-<button class="green"
-onclick="stlinkFlash()">
-FLASH IMAGE
-</button>
-
-<button class="orange"
-onclick="stlinkSoftRun()">
-SOFT RUN
-</button>
-
-</div>
-
-
-
-<button class="orange"
-onclick="stlinkPowerCycle()">
-POWER CYCLE (BACKWARD → FORWARD)
-</button>
-
-
-
-<button class="green"
-onclick="stlinkFullProgram()">
-FULL: CONTACT → PROBE → FLASH → POWER CYCLE
-</button>
-
-
-
-<textarea id="stlinkLog"
-class="stlink-log"
-readonly
-placeholder="OpenOCD output…"></textarea>
-
-
-
-</div>
-
-
-
-</div>
-
-
-
-
-
-
-
-
+<!-- ==================== TOAST STACK ==================== -->
+<div class="toast-stack" id="toastStack"></div>
 
 <script>
+const MOTOR_IDS = {{ motors | map(attribute='id') | list | tojson }};
+const CLEAR_LIMIT_STEPS = {{ clear_limit_steps | tojson }};
+let projectsByMotor = {{ projects | tojson }};
+let lastKnownPos = {};
+MOTOR_IDS.forEach(id => { lastKnownPos[id] = 0; });
 
-// ======================================================
-// AXIS SELECTION (two Arduinos, one dashboard)
-// Every call that talks to an Arduino gets ?axis=N added,
-// so the existing buttons/functions below work unchanged
-// for whichever axis tab is selected.
-// /stlink/* routes are NOT tagged: the server always sends
-// those to the H7 contact axis (STLINK_AXIS in server.py).
-// ======================================================
-
-const AXIS_IDS = {{ axes|map(attribute='id')|list|tojson }};
-
-const AXIS_LABELS = {{ axes|tojson }};
-
-const ARDUINO_ROUTES = [
-"/status", "/position", "/home", "/stop",
-"/move/", "/jog/", "/save_", "/clear_limits",
-"/buzzer_test", "/select_project", "/add_project"
-];
-
-let currentAxis = "{{ default_axis }}";
-
-try {
-let saved = localStorage.getItem("axis");
-if (saved && AXIS_IDS.includes(saved)) currentAxis = saved;
-} catch(e) {}
-
-const _origFetch = window.fetch.bind(window);
-
-window.fetch = function(url, opts)
-{
-if (typeof url === "string" &&
-    ARDUINO_ROUTES.some(p => url.startsWith(p)))
-{
-url += (url.includes("?") ? "&" : "?") +
-       "axis=" + encodeURIComponent(currentAxis);
+// ==================== TOASTS & MODAL ====================
+function notify(message, kind = "info") {
+    const stack = document.getElementById("toastStack");
+    const el = document.createElement("div");
+    el.className = "toast " + kind;
+    el.textContent = message;
+    stack.appendChild(el);
+    setTimeout(() => {
+        el.style.opacity = "0";
+        el.style.transition = "opacity 0.2s ease";
+        setTimeout(() => el.remove(), 220);
+    }, 3400);
 }
-return _origFetch(url, opts);
-};
 
+let modalCallback = null;
 
-function applyAxis()
-{
-AXIS_IDS.forEach(id =>
-{
-let b = document.getElementById("axisBtn" + id);
-if (b) b.classList.toggle("active", id === currentAxis);
+function openModal({ title, body, confirmText = "Confirm", danger = false, inputValue = null, onConfirm }) {
+    document.getElementById("modalTitle").textContent = title;
+    document.getElementById("modalBody").textContent = body;
+    const inputWrap = document.getElementById("modalInputWrap");
+    const inputEl = document.getElementById("modalInput");
+
+    if (inputValue !== null) {
+        inputWrap.style.display = "block";
+        inputEl.value = inputValue;
+        setTimeout(() => inputEl.focus(), 40);
+    } else {
+        inputWrap.style.display = "none";
+    }
+
+    const confirmBtn = document.getElementById("modalConfirmBtn");
+    confirmBtn.textContent = confirmText;
+    confirmBtn.className = danger ? "btn btn-danger-solid" : "btn btn-primary";
+    modalCallback = onConfirm;
+    document.getElementById("modalBackdrop").classList.add("open");
+}
+
+function closeModal() {
+    document.getElementById("modalBackdrop").classList.remove("open");
+    modalCallback = null;
+}
+
+document.getElementById("modalConfirmBtn").addEventListener("click", () => {
+    const cb = modalCallback;
+    const val = document.getElementById("modalInput").value;
+    closeModal();
+    if (cb) cb(val);
 });
 
-let lbl = AXIS_LABELS.find(a => a.id === currentAxis);
-let title = document.getElementById("axisTitle");
-if (title && lbl) title.textContent = "- " + lbl.label;
-
-// show only the projects that belong to this axis
-let sel = document.getElementById("projectSelect");
-if (sel)
-{
-let first = null;
-Array.from(sel.options).forEach(o =>
-{
-let mine = o.dataset.axis === currentAxis;
-o.hidden = !mine;
-o.disabled = !mine;
-if (mine && first === null) first = o;
-});
-if (first) sel.value = first.value;
-else sel.selectedIndex = -1;
-}
-}
-
-
-function setAxis(id)
-{
-currentAxis = id;
-
-try { localStorage.setItem("axis", id); } catch(e) {}
-
-// don't show the other axis' numbers while waiting
-["machineStatus","position","homed","forwardLimit","backwardLimit"]
-.forEach(k => { let e = document.getElementById(k); if (e) e.innerHTML = "..."; });
-
-applyAxis();
-
-updateStatus();
-}
-
-
-function refreshAxes()
-{
-_origFetch("/axes")
-.then(r => r.json())
-.then(list =>
-{
-let warn = [];
-list.forEach(a =>
-{
-let d = document.getElementById("axisDot" + a.id);
-if (d)
-{
-d.classList.toggle("ok", a.connected);
-d.classList.toggle("bad", !a.connected);
-}
-if (!a.connected && a.error)
-warn.push(a.label + ": " + a.error);
-});
-let w = document.getElementById("axisWarn");
-if (w) w.textContent = warn.join("  |  ");
-})
-.catch(e => {});
-}
-
-applyAxis();
-
-setInterval(refreshAxes, 3000);
-
-refreshAxes();
-
-
-
-
-
-function addProject()
-{
-
-
-let data=
-{
-
-name:
-document.getElementById("newName").value,
-
-
-forward:
-document.getElementById("newForward").value,
-
-
-backward:
-document.getElementById("newBackward").value
-
-
-};
-
-
-
-fetch("/add_project",
-{
-
-method:"POST",
-
-headers:
-{
-"Content-Type":"application/json"
-},
-
-
-body:
-JSON.stringify(data)
-
-
-})
-
-
-.then(r=>r.text())
-
-.then(t=>
-{
-
-alert(t);
-
-location.reload();
-
+document.getElementById("modalInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+        document.getElementById("modalConfirmBtn").click();
+    }
 });
 
-
+// ==================== API HELPER ====================
+async function apiJson(url, options = {}) {
+    const opts = Object.assign({ headers: {} }, options);
+    if (opts.body && typeof opts.body !== "string") {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(opts.body);
+    }
+    const resp = await fetch(url, opts);
+    if (resp.status === 401) {
+        window.location.href = "/login";
+        throw new Error("Session expired");
+    }
+    const data = await resp.json();
+    return { status: resp.status, data };
 }
 
-
-
-
-
-
-
-
-function loadProject()
-{
-
-
-let name=
-document.getElementById("projectSelect").value;
-
-
-
-fetch("/select_project",
-{
-
-method:"POST",
-
-headers:
-{
-"Content-Type":"application/json"
-},
-
-
-body:
-JSON.stringify(
-{
-name:name
-})
-
-})
-
-
-.then(r=>r.text())
-
-.then(alert);
-
-
+function formatSteps(val) {
+    const n = Number(val);
+    if (!Number.isFinite(n)) return String(val);
+    return n.toLocaleString("en-US");
 }
 
-
-
-
-
-
-
-
-
-function homeMachine()
-{
-
-fetch("/home");
-
+// ==================== MOTOR PURPOSE RENAME ====================
+function openPurposeModal(motorId) {
+    const current = document.getElementById("purposeText-" + motorId).textContent.trim();
+    openModal({
+        title: "Set Desired Purpose",
+        body: "Specify the fixture or axis role for this hardcoded Arduino controller:",
+        confirmText: "Save Purpose",
+        inputValue: current,
+        onConfirm: async (newPurpose) => {
+            try {
+                const { data } = await apiJson(`/api/motor/${motorId}/purpose`, {
+                    method: "POST",
+                    body: { purpose: newPurpose }
+                });
+                if (data.ok) {
+                    document.getElementById("purposeText-" + motorId).textContent = data.purpose;
+                    notify(`Updated ${motorId.toUpperCase()} purpose to "${data.purpose}"`, "ok");
+                }
+            } catch (err) {
+                notify("Failed to update purpose", "err");
+            }
+        }
+    });
 }
 
-
-
-function stopMachine()
-{
-
-fetch("/stop");
-
+// ==================== CONNECTION & ACTIONS ====================
+async function reconnectMotor(motorId) {
+    notify(`Reconnecting ${motorId.toUpperCase()}…`, "info");
+    try {
+        const { data } = await apiJson(`/api/motor/${motorId}/connect`, { method: "POST" });
+        if (data.connected) {
+            notify(`${data.name} online on ${data.port}`, "ok");
+        } else {
+            notify(`${data.name} offline (${data.error || "check USB cable"})`, "err");
+        }
+        pollMotorStatus(motorId);
+    } catch (e) {
+        notify("Reconnect request failed", "err");
+    }
 }
 
-
-
-
-function forwardMove()
-{
-
-fetch("/jog/forward");
-
+async function reconnectAll() {
+    notify("Reconnecting both Arduino ports…", "info");
+    try {
+        await apiJson("/api/motors/connect_all", { method: "POST" });
+        pollAllMotors();
+        notify("Port scan completed", "ok");
+    } catch (e) {
+        notify("Could not reconnect ports", "err");
+    }
 }
 
-
-
-
-function backwardMove()
-{
-
-fetch("/jog/backward");
-
+async function estopAll() {
+    try {
+        await apiJson("/api/motors/estop_all", { method: "POST" });
+        notify("Emergency stop sent to BOTH motors", "err");
+        pollAllMotors();
+    } catch (e) {
+        notify("Failed to transmit E-Stop", "err");
+    }
 }
 
-
-
-
-function saveForward()
-{
-
-fetch("/save_forward")
-.then(r=>r.text())
-.then(alert);
-
+async function motorAction(motorId, actionName, okNote) {
+    try {
+        const { data } = await apiJson(`/api/motor/${motorId}/action/${actionName}`, {
+            method: "POST"
+        });
+        if (data.ok) {
+            notify(`${motorId.toUpperCase()}: ${okNote || data.response}`, "ok");
+        } else {
+            notify(`${motorId.toUpperCase()}: ${data.error || "Arduino not connected"}`, "err");
+        }
+        pollMotorStatus(motorId);
+    } catch (e) {
+        notify(`${motorId.toUpperCase()}: Command failed`, "err");
+    }
 }
 
-
-
-
-function saveBackward()
-{
-
-fetch("/save_backward")
-.then(r=>r.text())
-.then(alert);
-
+function confirmClearLimits(motorId) {
+    openModal({
+        title: "Clear Travel Limits",
+        body: `Reset ${motorId.toUpperCase()} forward and backward limits to ±${formatSteps(CLEAR_LIMIT_STEPS)} steps?`,
+        confirmText: `Clear (±${formatSteps(CLEAR_LIMIT_STEPS)})`,
+        danger: true,
+        onConfirm: () => motorAction(motorId, "clear_limits", `Limits reset to ±${formatSteps(CLEAR_LIMIT_STEPS)} steps`)
+    });
 }
 
-
-
-
-function clearLimits()
-{
-
-if(!confirm("Clear the saved forward and backward limits?"))
-{
-    return;
+function confirmResetState(motorId) {
+    openModal({
+        title: "Reset Stored EEPROM State",
+        body: `Clear saved position & homed flag in ${motorId.toUpperCase()} EEPROM? The Arduino will automatically re-home on its next reboot.`,
+        confirmText: "Reset State",
+        danger: true,
+        onConfirm: () => motorAction(motorId, "reset_state", "Stored EEPROM state cleared")
+    });
 }
 
-fetch("/clear_limits")
-.then(r=>r.text())
-.then(alert);
+// ==================== HOLD-TO-JOG & HOLD-TO-CAPTURE ====================
+function bindHoldButtons() {
+    document.querySelectorAll(".hold-jog-btn").forEach(btn => {
+        let active = false;
+        const motorId = btn.dataset.motor;
+        const dir = btn.dataset.dir;
+        const startAction = dir === "forward" ? "move_forward" : "move_backward";
 
+        const start = (ev) => {
+            ev.preventDefault();
+            if (active) return;
+            active = true;
+            btn.classList.add("holding");
+            apiJson(`/api/motor/${motorId}/action/${startAction}`, { method: "POST" }).catch(() => {});
+        };
+
+        const stop = () => {
+            if (!active) return;
+            active = false;
+            btn.classList.remove("holding");
+            apiJson(`/api/motor/${motorId}/action/stop`, { method: "POST" })
+                .then(() => pollMotorStatus(motorId))
+                .catch(() => {});
+        };
+
+        btn.addEventListener("pointerdown", start);
+        btn.addEventListener("pointerup", stop);
+        btn.addEventListener("pointerleave", stop);
+        btn.addEventListener("pointercancel", stop);
+    });
+
+    document.querySelectorAll(".hold-capture-btn").forEach(btn => {
+        let active = false;
+        const motorId = btn.dataset.motor;
+        const dir = btn.dataset.dir;
+        const target = btn.dataset.target;
+        const startAction = dir === "forward" ? "move_forward" : "move_backward";
+
+        const start = (ev) => {
+            ev.preventDefault();
+            if (active) return;
+            active = true;
+            btn.classList.add("holding");
+            apiJson(`/api/motor/${motorId}/action/${startAction}`, { method: "POST" }).catch(() => {});
+        };
+
+        const stop = async () => {
+            if (!active) return;
+            active = false;
+            btn.classList.remove("holding");
+            try {
+                await apiJson(`/api/motor/${motorId}/action/stop`, { method: "POST" });
+                const { data } = await apiJson(`/api/motor/${motorId}/position`);
+                if (data.position !== null && data.position !== undefined) {
+                    const inputId = (target === "forward" ? "newForward-" : "newBackward-") + motorId;
+                    document.getElementById(inputId).value = data.position;
+                    lastKnownPos[motorId] = data.position;
+                }
+                pollMotorStatus(motorId);
+            } catch (e) {}
+        };
+
+        btn.addEventListener("pointerdown", start);
+        btn.addEventListener("pointerup", stop);
+        btn.addEventListener("pointerleave", stop);
+        btn.addEventListener("pointercancel", stop);
+    });
 }
 
-
-
-
-
-// ==========================
-// HARDWARE MONITOR
-// ==========================
-
-
-function testBuzzer()
-{
-
-fetch("/buzzer_test")
-.then(r=>r.text())
-.then(alert);
-
+// ==================== PER-MOTOR PRESETS ====================
+function togglePresetDrawer(motorId) {
+    const drawer = document.getElementById("presetDrawer-" + motorId);
+    drawer.classList.toggle("open");
 }
 
-
-
-
-// ==========================
-// ST-LINK / H7 FLASH
-// ==========================
-
-
-function stlinkAppendLog(text)
-{
-
-let el=document.getElementById("stlinkLog");
-
-el.value=(el.value?el.value+"\n":"")+text;
-
-el.scrollTop=el.scrollHeight;
-
+function fillCurrentPos(motorId, which) {
+    const inputId = (which === "forward" ? "newForward-" : "newBackward-") + motorId;
+    document.getElementById(inputId).value = lastKnownPos[motorId] ?? 0;
 }
 
+function renderProjectOptions(motorId, projects, activeProject = null) {
+    projectsByMotor[motorId] = projects;
+    const sel = document.getElementById("projectSelect-" + motorId);
+    const names = Object.keys(projects);
+    sel.innerHTML = "";
 
+    if (names.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = `(No saved presets for ${motorId.toUpperCase()})`;
+        sel.appendChild(opt);
+        return;
+    }
 
-function stlinkSetSwd(state, detail)
-{
-
-let light=document.getElementById("stlinkSwdLight");
-
-let text=document.getElementById("stlinkSwd");
-
-text.innerHTML=detail||state||"--";
-
-if(state=="ok")
-light.style.background="#22c55e";
-else if(state=="swd_fail" || state=="no_adapter" || state=="flash_fail" || state=="error")
-light.style.background="#ef4444";
-else if(state=="busy")
-light.style.background="#facc15";
-else
-light.style.background="#475569";
-
+    names.forEach(name => {
+        const p = projects[name];
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = `${name}  [BWD: ${p.backward} → FWD: ${p.forward}]`;
+        if (activeProject && activeProject === name) {
+            opt.selected = true;
+        }
+        sel.appendChild(opt);
+    });
 }
 
+async function saveProject(motorId) {
+    const name = document.getElementById("newName-" + motorId).value.trim();
+    const forward = document.getElementById("newForward-" + motorId).value.trim();
+    const backward = document.getElementById("newBackward-" + motorId).value.trim();
 
+    if (!name) {
+        notify("Please enter a preset name", "err");
+        return;
+    }
 
-function refreshStlinkStatus()
-{
-
-fetch("/stlink/status")
-
-.then(r=>r.json())
-
-.then(s=>
-{
-
-let light=document.getElementById("stlinkLight");
-
-let usb=document.getElementById("stlinkUsb");
-
-if(s.adapter_present)
-{
-light.style.background="#22c55e";
-usb.innerHTML="PRESENT";
-}
-else
-{
-light.style.background="#ef4444";
-usb.innerHTML="MISSING";
-}
-
-
-let sel=document.getElementById("stlinkImage");
-
-let prev=sel.value;
-
-sel.innerHTML="";
-
-if(!s.images || !s.images.length)
-{
-
-let opt=document.createElement("option");
-
-opt.value="";
-
-opt.textContent="(none — place bins in firmware/indi_h743/)";
-
-sel.appendChild(opt);
-
-}
-else
-{
-
-s.images.forEach(img=>
-{
-
-let opt=document.createElement("option");
-
-opt.value=img.name;
-
-opt.textContent=img.name+" ("+img.role+", "+img.size+" B)";
-
-sel.appendChild(opt);
-
-});
-
-if(prev)
-sel.value=prev;
-
+    try {
+        const { data } = await apiJson(`/api/motor/${motorId}/projects`, {
+            method: "POST",
+            body: { name, forward, backward }
+        });
+        if (!data.ok) {
+            notify(data.error || "Could not save preset", "err");
+            return;
+        }
+        renderProjectOptions(motorId, data.projects, name);
+        document.getElementById("newName-" + motorId).value = "";
+        document.getElementById("presetDrawer-" + motorId).classList.remove("open");
+        notify(`Saved preset "${name}" for ${motorId.toUpperCase()}`, "ok");
+    } catch (e) {
+        notify("Failed to save preset", "err");
+    }
 }
 
-})
+async function loadProject(motorId) {
+    const sel = document.getElementById("projectSelect-" + motorId);
+    const name = sel.value;
+    if (!name) {
+        notify("Select a preset to load first", "err");
+        return;
+    }
 
-.catch(()=>{});
-
+    try {
+        const { data } = await apiJson(`/api/motor/${motorId}/projects/${encodeURIComponent(name)}/load`, {
+            method: "POST"
+        });
+        if (data.ok) {
+            document.getElementById("activePreset-" + motorId).textContent = name;
+            notify(`Loaded preset "${name}" onto ${motorId.toUpperCase()}`, "ok");
+            pollMotorStatus(motorId);
+        } else {
+            notify(`${motorId.toUpperCase()}: ${data.error || "Arduino offline"}`, "err");
+        }
+    } catch (e) {
+        notify("Failed to load preset", "err");
+    }
 }
 
+function confirmDeleteProject(motorId) {
+    const sel = document.getElementById("projectSelect-" + motorId);
+    const name = sel.value;
+    if (!name) {
+        notify("No preset selected", "err");
+        return;
+    }
 
-
-function stlinkPost(url, body)
-{
-
-return fetch(url,
-{
-method:"POST",
-headers:{"Content-Type":"application/json"},
-body:JSON.stringify(body||{})
-})
-.then(r=>r.json().then(j=>({http:r.status, body:j})));
-
+    openModal({
+        title: "Delete Preset",
+        body: `Delete preset "${name}" from ${motorId.toUpperCase()}?`,
+        confirmText: "Delete Preset",
+        danger: true,
+        onConfirm: async () => {
+            try {
+                const { data } = await apiJson(`/api/motor/${motorId}/projects/${encodeURIComponent(name)}`, {
+                    method: "DELETE"
+                });
+                if (data.ok) {
+                    renderProjectOptions(motorId, data.projects);
+                    notify(`Deleted preset "${name}"`, "ok");
+                } else {
+                    notify(data.error || "Delete failed", "err");
+                }
+            } catch (e) {
+                notify("Failed to delete preset", "err");
+            }
+        }
+    });
 }
 
-
-
-function stlinkContact()
-{
-
-stlinkSetSwd("busy","SEATING…");
-
-stlinkAppendLog("--- seat contact (H7 + FORWARD) ---");
-
-return stlinkPost("/stlink/contact",{load_h7:true})
-
-.then(res=>
-{
-
-stlinkAppendLog(JSON.stringify(res.body,null,2));
-
-if(res.body.ok)
-stlinkSetSwd("busy","CONTACT READY — probe next");
-else
-stlinkSetSwd("error","CONTACT TIMEOUT");
-
-return res.body;
-
-});
-
+// ==================== LIVE TELEMETRY POLLING ====================
+function updateSwitchChip(chipId, valId, val, dangerWhenOn = false) {
+    const chip = document.getElementById(chipId);
+    const strong = document.getElementById(valId);
+    const text = val || "--";
+    strong.textContent = text;
+    chip.classList.remove("active", "danger");
+    if (text === "ON") {
+        chip.classList.add(dangerWhenOn ? "danger" : "active");
+    }
 }
 
+function updateTravelGauge(motorId, pos, bwd, fwd) {
+    const span = fwd - bwd;
+    const thumb = document.getElementById("travelThumb-" + motorId);
+    const fill = document.getElementById("travelFill-" + motorId);
+    const originTick = document.getElementById("originTick-" + motorId);
 
+    if (!Number.isFinite(span) || span <= 0) {
+        thumb.style.left = "50%";
+        fill.style.left = "50%";
+        fill.style.width = "0%";
+        originTick.style.left = "50%";
+        return;
+    }
 
-function stlinkProbe()
-{
+    const clampPct = (v) => Math.max(0, Math.min(100, v));
+    const posPct = clampPct(((pos - bwd) / span) * 100);
+    const originPct = clampPct(((0 - bwd) / span) * 100);
 
-stlinkSetSwd("busy","PROBING…");
+    thumb.style.left = posPct.toFixed(1) + "%";
+    originTick.style.left = originPct.toFixed(1) + "%";
 
-stlinkAppendLog("--- probe SWD ---");
+    const leftPct = Math.min(posPct, originPct);
+    const widthPct = Math.abs(posPct - originPct);
+    fill.style.left = leftPct.toFixed(1) + "%";
+    fill.style.width = widthPct.toFixed(1) + "%";
+}
 
-return stlinkPost("/stlink/probe",{})
+function applyMotorOnlineState(motorId, connected, stateLabel, errorMessage) {
+    const topDot = document.getElementById("topDot-" + motorId);
+    const topState = document.getElementById("topState-" + motorId);
+    const badge = document.getElementById("stateBadge-" + motorId);
+    const stateDot = document.getElementById("stateDot-" + motorId);
+    const stateText = document.getElementById("stateText-" + motorId);
+    const banner = document.getElementById("offlineBanner-" + motorId);
+    const bannerMsg = document.getElementById("offlineMsg-" + motorId);
 
-.then(res=>
-{
+    badge.className = "state-badge";
+    stateDot.className = "dot";
+    topDot.className = "dot";
 
-let b=res.body;
+    if (!connected) {
+        topDot.classList.add("offline");
+        topState.textContent = "OFFLINE";
+        badge.classList.add("offline");
+        stateDot.classList.add("offline");
+        stateText.textContent = "OFFLINE";
+        banner.classList.add("visible");
+        if (errorMessage) {
+            bannerMsg.textContent = errorMessage;
+        }
+        return;
+    }
 
-document.getElementById("stlinkVoltage").innerHTML=
-(b.voltage!=null)?(b.voltage+" V"):"--";
+    banner.classList.remove("visible");
+    topDot.classList.add("online");
+    topState.textContent = stateLabel || "ONLINE";
+    stateText.textContent = stateLabel || "READY";
 
-stlinkAppendLog(b.log||JSON.stringify(b,null,2));
+    if (stateLabel === "READY") {
+        badge.classList.add("ready");
+        stateDot.classList.add("online");
+    } else if (stateLabel && stateLabel.includes("EMERGENCY")) {
+        badge.classList.add("estop");
+        stateDot.classList.add("offline");
+    } else {
+        badge.classList.add("moving");
+        stateDot.classList.add("busy");
+    }
+}
 
-if(b.ok)
-stlinkSetSwd("ok","CONNECTED");
-else
-stlinkSetSwd(b.state||"error",(b.state||"FAIL").toUpperCase());
+async function pollMotorStatus(motorId) {
+    try {
+        const { data: s } = await apiJson(`/api/motor/${motorId}/status`);
 
+        if (s.purpose) {
+            document.getElementById("purposeText-" + motorId).textContent = s.purpose;
+        }
+        document.getElementById("activePreset-" + motorId).textContent =
+            s.active_project || "Manual / Default";
+
+        if (s.error || !s.connected) {
+            applyMotorOnlineState(
+                motorId,
+                false,
+                "OFFLINE",
+                `Arduino offline on ${s.port || ""}${s.message ? " — " + s.message : ""}`
+            );
+            return;
+        }
+
+        applyMotorOnlineState(motorId, true, s.state, null);
+
+        lastKnownPos[motorId] = Number(s.position) || 0;
+        document.getElementById("pos-" + motorId).textContent = formatSteps(s.position);
+
+        const homedEl = document.getElementById("homedBadge-" + motorId);
+        if (s.homed) {
+            homedEl.textContent = "HOMED";
+            homedEl.className = "pill-tag ok";
+        } else {
+            homedEl.textContent = "UNHOMED";
+            homedEl.className = "pill-tag warn";
+        }
+
+        const bwd = Number(s.backward);
+        const fwd = Number(s.forward);
+        document.getElementById("bwdLim-" + motorId).textContent = formatSteps(bwd);
+        document.getElementById("fwdLim-" + motorId).textContent =
+            (fwd > 0 ? "+" : "") + formatSteps(fwd);
+
+        updateTravelGauge(motorId, lastKnownPos[motorId], bwd, fwd);
+
+        updateSwitchChip("ioHome-" + motorId, "ioHomeVal-" + motorId, s.home_switch, false);
+        updateSwitchChip("ioBwd-" + motorId, "ioBwdVal-" + motorId, s.backward_switch, false);
+        updateSwitchChip("ioFwd-" + motorId, "ioFwdVal-" + motorId, s.forward_switch, false);
+        updateSwitchChip("ioEstop-" + motorId, "ioEstopVal-" + motorId, s.emergency, true);
+    } catch (e) {
+        // Keep UI responsive on transient network hiccups
+    }
+}
+
+function pollAllMotors() {
+    MOTOR_IDS.forEach(pollMotorStatus);
+}
+
+// ==================== ST-LINK / H7 PROGRAMMING ====================
+function stlinkAppendLog(text) {
+    const el = document.getElementById("stlinkLog");
+    const stamp = new Date().toLocaleTimeString();
+    el.value = (el.value ? el.value + "\n" : "") + `[${stamp}] ${text}`;
+    el.scrollTop = el.scrollHeight;
+}
+
+function clearStlinkLog() {
+    document.getElementById("stlinkLog").value = "";
+}
+
+function setStlinkSwdBadge(mode, label) {
+    const badge = document.getElementById("stlinkSwdBadge");
+    const dot = document.getElementById("stlinkSwdDot");
+    const text = document.getElementById("stlinkSwdText");
+    text.textContent = label;
+    badge.className = "state-badge";
+    dot.className = "dot";
+
+    if (mode === "ok") {
+        badge.classList.add("ready");
+        dot.classList.add("online");
+    } else if (mode === "busy") {
+        badge.classList.add("moving");
+        dot.classList.add("busy");
+    } else if (mode === "err") {
+        badge.classList.add("estop");
+        dot.classList.add("offline");
+    }
+}
+
+async function refreshStlinkStatus() {
+    try {
+        const { data: s } = await apiJson("/api/stlink/status");
+        const usbBadge = document.getElementById("stlinkUsbBadge");
+        const usbDot = document.getElementById("stlinkUsbDot");
+        const usbText = document.getElementById("stlinkUsbText");
+
+        usbBadge.className = "state-badge " + (s.adapter_present ? "ready" : "offline");
+        usbDot.className = "dot " + (s.adapter_present ? "online" : "offline");
+        usbText.textContent = s.adapter_present ? "PRESENT" : "MISSING";
+
+        const sel = document.getElementById("stlinkImage");
+        const prev = sel.value;
+        sel.innerHTML = "";
+
+        if (!s.images || s.images.length === 0) {
+            const opt = document.createElement("option");
+            opt.value = "";
+            opt.textContent = "(No .hex / .bin images found in firmware/indi_h743/)";
+            sel.appendChild(opt);
+        } else {
+            s.images.forEach(img => {
+                const opt = document.createElement("option");
+                opt.value = img.name;
+                opt.textContent = `${img.name} (${img.role}, ${img.size.toLocaleString()} B)`;
+                sel.appendChild(opt);
+            });
+            if (prev && Array.from(sel.options).some(o => o.value === prev)) {
+                sel.value = prev;
+            }
+        }
+    } catch (e) {}
+}
+
+async function stlinkContact() {
+    const motor = document.getElementById("stlinkMotor").value;
+    setStlinkSwdBadge("busy", "SEATING…");
+    stlinkAppendLog(`Seating pogo contact via ${motor.toUpperCase()}…`);
+
+    try {
+        const { data } = await apiJson("/api/stlink/contact", {
+            method: "POST",
+            body: { motor, load_h7: true }
+        });
+        stlinkAppendLog(JSON.stringify(data));
+        if (data.ok) {
+            setStlinkSwdBadge("ok", "CONTACT READY");
+            notify("Fixture seated at forward contact", "ok");
+        } else {
+            setStlinkSwdBadge("err", (data.state || "CONTACT FAIL").toUpperCase());
+            notify(data.error || "Contact seating failed", "err");
+        }
+        pollMotorStatus(motor);
+        return data;
+    } catch (e) {
+        setStlinkSwdBadge("err", "ERROR");
+        return null;
+    }
+}
+
+async function stlinkProbe() {
+    setStlinkSwdBadge("busy", "PROBING…");
+    stlinkAppendLog("Probing STM32H743 over SWD…");
+
+    try {
+        const { data } = await apiJson("/api/stlink/probe", { method: "POST", body: {} });
+        document.getElementById("stlinkVoltage").textContent =
+            data.voltage != null ? `${data.voltage} V` : "--";
+        stlinkAppendLog(data.log || JSON.stringify(data));
+
+        if (data.ok) {
+            setStlinkSwdBadge("ok", "SWD CONNECTED");
+            notify("SWD target connected", "ok");
+        } else {
+            setStlinkSwdBadge("err", (data.state || "SWD FAIL").toUpperCase());
+            notify(`SWD probe failed (${data.state || "error"})`, "err");
+        }
+        refreshStlinkStatus();
+        return data;
+    } catch (e) {
+        setStlinkSwdBadge("err", "ERROR");
+        return null;
+    }
+}
+
+async function stlinkFlash() {
+    const image = document.getElementById("stlinkImage").value;
+    const base = document.getElementById("stlinkBase").value;
+
+    if (!image) {
+        notify("No firmware image available in firmware/indi_h743/", "err");
+        return null;
+    }
+
+    setStlinkSwdBadge("busy", "FLASHING…");
+    stlinkAppendLog(`Flashing ${image}${base ? " @ " + base : ""}…`);
+
+    const payload = { image };
+    if (base) payload.base = base;
+
+    try {
+        const { data } = await apiJson("/api/stlink/flash", { method: "POST", body: payload });
+        stlinkAppendLog(data.log || JSON.stringify(data));
+
+        if (data.ok || data.verified) {
+            setStlinkSwdBadge("ok", "VERIFIED OK");
+            notify(`Flashed & verified ${image}`, "ok");
+        } else {
+            setStlinkSwdBadge("err", (data.state || "FLASH FAIL").toUpperCase());
+            notify("Flash / verify failed — check log", "err");
+        }
+        return data;
+    } catch (e) {
+        setStlinkSwdBadge("err", "ERROR");
+        return null;
+    }
+}
+
+async function stlinkSoftRun() {
+    setStlinkSwdBadge("busy", "SOFT RUN…");
+    stlinkAppendLog("Triggering soft SYSRESETREQ run…");
+
+    try {
+        const { data } = await apiJson("/api/stlink/run", { method: "POST", body: {} });
+        stlinkAppendLog(data.log || JSON.stringify(data));
+        if (data.ok) {
+            setStlinkSwdBadge("ok", "RUNNING");
+            notify("Target soft-started", "ok");
+        } else {
+            setStlinkSwdBadge("err", (data.state || "RUN FAIL").toUpperCase());
+            notify("Soft run failed", "err");
+        }
+        return data;
+    } catch (e) {
+        setStlinkSwdBadge("err", "ERROR");
+        return null;
+    }
+}
+
+async function stlinkPowerCycle() {
+    const motor = document.getElementById("stlinkMotor").value;
+    setStlinkSwdBadge("busy", "POWER CYCLING…");
+    stlinkAppendLog(`Mechanical power cycle via ${motor.toUpperCase()} (Backward → Forward)…`);
+
+    try {
+        const { data } = await apiJson("/api/stlink/power_cycle", {
+            method: "POST",
+            body: { motor }
+        });
+        stlinkAppendLog(JSON.stringify(data));
+        if (data.ok) {
+            setStlinkSwdBadge("ok", "POWER CYCLED");
+            notify("Fixture power cycle complete", "ok");
+        } else {
+            setStlinkSwdBadge("err", (data.state || "CYCLE FAIL").toUpperCase());
+            notify("Power cycle incomplete", "err");
+        }
+        pollMotorStatus(motor);
+        return data;
+    } catch (e) {
+        setStlinkSwdBadge("err", "ERROR");
+        return null;
+    }
+}
+
+function confirmFullProgram() {
+    openModal({
+        title: "Run Full Programming Sequence",
+        body: "Execute Seat Contact → Probe SWD → Flash & Verify → Mechanical Power Cycle?",
+        confirmText: "Start Sequence",
+        onConfirm: runFullProgram
+    });
+}
+
+async function runFullProgram() {
+    stlinkAppendLog("=== FULL PROGRAMMING SEQUENCE START ===");
+    const c = await stlinkContact();
+    if (!c || !c.ok) {
+        stlinkAppendLog("ABORTED: Fixture contact not ready.");
+        return;
+    }
+
+    const p = await stlinkProbe();
+    if (!p || !p.ok) {
+        stlinkAppendLog("ABORTED: SWD probe failed.");
+        return;
+    }
+
+    const f = await stlinkFlash();
+    if (!f || !(f.ok || f.verified)) {
+        stlinkAppendLog("ABORTED: Flash verification failed.");
+        return;
+    }
+
+    await stlinkPowerCycle();
+    stlinkAppendLog("=== FULL PROGRAMMING SEQUENCE COMPLETE ===");
+}
+
+// ==================== BOOTSTRAP ====================
+bindHoldButtons();
+pollAllMotors();
 refreshStlinkStatus();
 
-return b;
-
-});
-
-}
-
-
-
-function stlinkFlash()
-{
-
-let image=document.getElementById("stlinkImage").value;
-
-let base=document.getElementById("stlinkBase").value;
-
-if(!image)
-{
-alert("No flash image selected. Copy PadTest arducopter.bin (+ bootloader) into firmware/indi_h743/ and merge if needed.");
-return Promise.resolve(null);
-}
-
-stlinkSetSwd("busy","FLASHING…");
-
-stlinkAppendLog("--- flash "+image+(base?" @ "+base:"")+" ---");
-
-let body={image:image};
-
-if(base)
-body.base=base;
-
-return stlinkPost("/stlink/flash",body)
-
-.then(res=>
-{
-
-let b=res.body;
-
-stlinkAppendLog(b.log||JSON.stringify(b,null,2));
-
-if(b.ok || b.verified)
-stlinkSetSwd("ok","FLASHED — run or power-cycle");
-else
-stlinkSetSwd(b.state||"flash_fail",(b.state||"FLASH FAIL").toUpperCase());
-
-return b;
-
-});
-
-}
-
-
-
-function stlinkSoftRun()
-{
-
-stlinkSetSwd("busy","SOFT RUN…");
-
-stlinkAppendLog("--- soft run (no NRST) ---");
-
-return stlinkPost("/stlink/run",{})
-
-.then(res=>
-{
-
-let b=res.body;
-
-stlinkAppendLog(b.log||JSON.stringify(b,null,2));
-
-if(b.ok)
-stlinkSetSwd("ok","RUNNING (soft)");
-else
-stlinkSetSwd(b.state||"error",(b.state||"RUN FAIL").toUpperCase());
-
-return b;
-
-});
-
-}
-
-
-
-function stlinkPowerCycle()
-{
-
-stlinkSetSwd("busy","POWER CYCLE…");
-
-stlinkAppendLog("--- power cycle: BACKWARD → FORWARD ---");
-
-return stlinkPost("/stlink/power_cycle",{})
-
-.then(res=>
-{
-
-stlinkAppendLog(JSON.stringify(res.body,null,2));
-
-if(res.body.ok)
-stlinkSetSwd("ok","POWER CYCLED");
-else
-stlinkSetSwd("error",(res.body.state||"CYCLE FAIL").toUpperCase());
-
-return res.body;
-
-});
-
-}
-
-
-
-async function stlinkFullProgram()
-{
-
-if(!confirm("Run full program cycle?\nSeat contact → probe → flash → power cycle."))
-return;
-
-stlinkAppendLog("===== FULL PROGRAM START =====");
-
-let c=await stlinkContact();
-
-if(!c || !c.ok)
-{
-stlinkAppendLog("ABORT: contact failed");
-return;
-}
-
-let p=await stlinkProbe();
-
-if(!p || !p.ok)
-{
-if(!confirm("SWD probe failed. Flash anyway?"))
-{
-stlinkAppendLog("ABORT: probe failed");
-return;
-}
-}
-
-let f=await stlinkFlash();
-
-if(!f || !(f.ok || f.verified))
-{
-stlinkAppendLog("ABORT: flash failed");
-return;
-}
-
-await stlinkPowerCycle();
-
-stlinkAppendLog("===== FULL PROGRAM DONE =====");
-
-}
-
-
-
-
-// Lights up a hw-row's dot and fills in its text based on
-// whatever the Arduino reported for that field in /status.
-// Handles OK/FAIL strings, booleans, raw values, or the field
-// being absent (older firmware that doesn't send it yet).
-
-function setHwStatus(prefix, val)
-{
-
-let light=
-document.getElementById(prefix+"Light");
-
-
-let text=
-document.getElementById(prefix+"Status");
-
-
-if(val===undefined || val===null || val==="")
-{
-
-light.style.background="#475569";
-
-text.innerHTML="N/A";
-
-return;
-
-}
-
-
-text.innerHTML=val;
-
-
-if(val=="OK" || val===true)
-{
-
-light.style.background="#22c55e";
-
-}
-
-else if(val=="FAIL" || val===false)
-{
-
-light.style.background="#ef4444";
-
-}
-
-else
-{
-
-light.style.background="#facc15";
-
-}
-
-
-}
-
-
-
-
-
-// ==========================
-// ADD PROJECT: TYPE / JOG MODE
-// ==========================
-
-
-function setMode(which, mode)
-{
-
-let typeBtn=
-document.getElementById(
-which=="forward" ? "fwdTypeBtn" : "bwdTypeBtn"
-);
-
-
-let jogBtn=
-document.getElementById(
-which=="forward" ? "fwdJogBtn" : "bwdJogBtn"
-);
-
-
-let input=
-document.getElementById(
-which=="forward" ? "newForward" : "newBackward"
-);
-
-
-let panel=
-document.getElementById(
-which=="forward" ? "fwdJogPanel" : "bwdJogPanel"
-);
-
-
-
-if(mode=="jog")
-{
-
-typeBtn.classList.remove("active");
-
-jogBtn.classList.add("active");
-
-input.readOnly=true;
-
-panel.style.display="block";
-
-}
-else
-{
-
-typeBtn.classList.add("active");
-
-jogBtn.classList.remove("active");
-
-input.readOnly=false;
-
-panel.style.display="none";
-
-}
-
-
-}
-
-
-
-
-
-// Hold-to-move buttons used by the jog panel.
-// mousedown/touchstart starts continuous motion,
-// mouseup/touchend or leaving the button stops it.
-
-function startMove(direction)
-{
-
-fetch("/move/"+direction);
-
-}
-
-
-
-function stopMove(which)
-{
-
-fetch("/stop")
-
-.then(()=>
-{
-
-if(which)
-{
-
-captureLimit(which);
-
-}
-
-});
-
-}
-
-
-
-
-
-function captureLimit(which)
-{
-
-fetch("/position")
-
-.then(r=>r.json())
-
-.then(p=>
-{
-
-let pos=p.position;
-
-
-if(which=="forward")
-{
-
-document.getElementById("newForward").value=pos;
-
-document.getElementById("fwdJogPosition").innerHTML=pos;
-
-}
-else
-{
-
-document.getElementById("newBackward").value=pos;
-
-document.getElementById("bwdJogPosition").innerHTML=pos;
-
-}
-
-
-});
-
-
-}
-
-
-
-
-
-
-
-
-
-function updateStatus()
-{
-
-
-fetch("/status")
-
-.then(r=>r.json())
-
-.then(s=>
-{
-
-
-if(s.error)
-{
-
-console.log("Waiting Arduino status:", s.error);
-
-return;
-
-}
-
-
-
-document.getElementById("machineStatus").innerHTML=
-s.state;
-
-
-
-document.getElementById("position").innerHTML=
-s.position;
-
-
-
-document.getElementById("homed").innerHTML=
-s.homed ? "YES" : "NO";
-
-
-
-document.getElementById("forwardLimit").innerHTML=
-s.forward;
-
-
-
-document.getElementById("backwardLimit").innerHTML=
-s.backward;
-
-
-
-// keep the jog panels' live position readouts in sync
-
-document.getElementById("fwdJogPosition").innerHTML=
-s.position;
-
-
-document.getElementById("bwdJogPosition").innerHTML=
-s.position;
-
-
-
-// hardware monitor -- rides along on the same status poll
-
-setHwStatus("v45", s.v4_5);
-
-setHwStatus("v9", s.v9);
-
-setHwStatus("imu", s.imu);
-
-setHwStatus("spi", s.spi);
-
-
-
-
-
-let light=
-document.getElementById("statusLight");
-
-
-
-if(s.state=="READY")
-{
-
-light.style.background="#22c55e";
-
-}
-
-
-
-else if(s.state=="EMERGENCY STOP")
-{
-
-light.style.background="#ef4444";
-
-}
-
-
-
-else
-{
-
-light.style.background="#facc15";
-
-}
-
-
-}
-)
-
-
-.catch(e=>
-console.log("Waiting Arduino status")
-);
-
-
-}
-
-
-
-
-
-
-setInterval(
-updateStatus,
-1000
-);
-
-
-
-updateStatus();
-
-
-
-setInterval(
-refreshStlinkStatus,
-5000
-);
-
-
-
-refreshStlinkStatus();
-
-
-
+setInterval(pollAllMotors, 1000);
+setInterval(refreshStlinkStatus, 5000);
 </script>
-
-
-
 </body>
-
 </html>

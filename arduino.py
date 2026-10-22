@@ -1,73 +1,21 @@
-import serial
-import time
+"""Legacy single-motor helper preserved for backwards compatibility.
 
+New code uses steppers.py, which manages both hardcoded Arduinos:
+    /dev/stepper_a -> Motor 1
+    /dev/stepper_b -> Motor 2
+"""
 
-PORT="/dev/stepper_controller"
-
-BAUD=115200
-
-
-arduino=None
-
+from steppers import BAUD_RATE as BAUD, MOTOR_1_PORT as PORT, MOTORS
 
 
 def connect():
-
-    global arduino
-
-
-    try:
-
-        arduino=serial.Serial(
-            PORT,
-            BAUD,
-            timeout=1
-        )
-
-        time.sleep(2)
-
-        print("Arduino connected")
-
-
-    except Exception as e:
-
-        print("Arduino connection failed",e)
-
-        arduino=None
-
-
-
+    return MOTORS["motor1"].connect(force=True)
 
 
 def send(command):
-
-    global arduino
-
-
-    if arduino is None:
-        connect()
-
-
-    if arduino:
-
-
-        arduino.write(
-            (command+"\n").encode()
-        )
-
-
-        time.sleep(0.1)
-
-
-        return arduino.readline().decode()
-
-
-    return "Arduino not connected"
-
-
-
+    reply = MOTORS["motor1"].send(command)
+    return reply if reply is not None else "Arduino not connected"
 
 
 def status():
-
     return send("STATUS")

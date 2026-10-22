@@ -127,6 +127,13 @@ public:
 
 struct HardwareSerial
 {
+    std::string rxLine;
+
+    void feed(const char* line)
+    {
+        rxLine = line ? line : "";
+    }
+
     void begin(unsigned long speed)
     {
         (void)speed;
@@ -134,13 +141,15 @@ struct HardwareSerial
 
     int available()
     {
-        return 0;
+        return rxLine.empty() ? 0 : (int)rxLine.size();
     }
 
     String readStringUntil(char terminator)
     {
         (void)terminator;
-        return String();
+        String out(rxLine);
+        rxLine.clear();
+        return out;
     }
 
     template <typename T>

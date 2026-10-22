@@ -26,24 +26,20 @@ long forwardLimit = NO_FORWARD_LIMIT;
 
 long backwardLimit = NO_BACKWARD_LIMIT;
 
-
 unsigned long waitStart = 0;
-
 
 bool homed = false;
 
 bool moving = false;
 
+
 // ===================================================
 // SETUP
 // ===================================================
 
-
 void setup()
 {
-
     Serial.begin(SERIAL_SPEED);
-
 
     Serial.println();
     Serial.println("=================================");
@@ -52,45 +48,33 @@ void setup()
     Serial.println(FIRMWARE_VERSION);
     Serial.println("=================================");
 
+    pinMode(EN_PIN, OUTPUT);
+    pinMode(DIR_PIN, OUTPUT);
+    pinMode(STEP_PIN, OUTPUT);
 
+    pinMode(HOME_PIN, INPUT_PULLUP);
+    pinMode(ESTOP_PIN, INPUT_PULLUP);
 
-    pinMode(EN_PIN,OUTPUT);
+    pinMode(FORWARD_SWITCH, INPUT_PULLUP);
+    pinMode(BACKWARD_SWITCH, INPUT_PULLUP);
 
-    pinMode(DIR_PIN,OUTPUT);
-
-    pinMode(STEP_PIN,OUTPUT);
-
-
-
-    pinMode(HOME_PIN,INPUT_PULLUP);
-
-
-    pinMode(ESTOP_PIN,INPUT_PULLUP);
-
-
-
-    pinMode(FORWARD_SWITCH,INPUT_PULLUP);
-
-    pinMode(BACKWARD_SWITCH,INPUT_PULLUP);
-
-
-
-    // Enable driver
-    digitalWrite(EN_PIN,LOW);
-
-
+    // Enable stepper driver
+    digitalWrite(EN_PIN, LOW);
 
     loadEEPROM();
 
-
-
-    Serial.println("STARTING AUTOMATIC HOMING");
-
-
-    state = FAST_HOMING;
-
+    if (homed)
+    {
+        Serial.println("STATE RESTORED - READY");
+        state = READY;
+    }
+    else
+    {
+        Serial.println("STARTING AUTOMATIC HOMING");
+        resetHomingOffset();
+        state = FAST_HOMING;
+    }
 }
-
 
 
 // ===================================================
@@ -103,7 +87,7 @@ void loop()
 
     processSerial();
 
-    switch(state)
+    switch (state)
     {
         case FAST_HOMING:
             fastHome();
@@ -138,62 +122,30 @@ void loop()
             break;
     }
 
-   
+    updatePositionBackup();
 }
+
 
 // ===================================================
 // SAFETY FRAMEWORK
 // ===================================================
 
-
 void checkEmergencyStop()
 {
-
-    if(
-      digitalRead(ESTOP_PIN)==ESTOP_TRIGGER
-      &&
-      state != ESTOPPED
-    )
+    if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER && state != ESTOPPED)
     {
-
-
         Serial.println("EMERGENCY STOP");
 
+        digitalWrite(EN_PIN, HIGH);
 
-        digitalWrite(
-            EN_PIN,
-            HIGH
-        );
-
+        saveState(false);
 
         state = ESTOPPED;
-
-
     }
-
-
 }
-
-
-
 
 
 void emergencyState()
 {
-
-    // Locked state
-    // Reset required
-
-
+    // Locked state while E-Stop is active
 }
-
-
-
-
-
-
-// ===================================================
-// PLACEHOLDER FUNCTIONS
-// FILLED IN NEXT PARTS
-// ===================================================
-

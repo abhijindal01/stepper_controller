@@ -2,6 +2,7 @@
 
 #include "Config.h"
 #include "State.h"
+#include "Machine.h"
 #include "Motion.h"
 
 
@@ -10,15 +11,10 @@
 // ==================================================
 
 extern long currentPosition;
-
 extern long forwardLimit;
-
 extern long backwardLimit;
-
 extern bool moving;
-
 extern MachineState state;
-
 
 
 // ==================================================
@@ -27,17 +23,11 @@ extern MachineState state;
 
 void stepMotor(int speed)
 {
-
-    digitalWrite(STEP_PIN,HIGH);
-
+    digitalWrite(STEP_PIN, HIGH);
     delayMicroseconds(speed);
-
-    digitalWrite(STEP_PIN,LOW);
-
+    digitalWrite(STEP_PIN, LOW);
     delayMicroseconds(speed);
-
 }
-
 
 
 // ==================================================
@@ -46,33 +36,18 @@ void stepMotor(int speed)
 
 void moveForward()
 {
-
-    if(currentPosition >= forwardLimit)
+    if (currentPosition >= forwardLimit)
     {
         Serial.println("FORWARD LIMIT REACHED");
-
-        state=READY;
-
+        state = READY;
+        saveState(false);
         return;
     }
 
-
-    digitalWrite(
-        DIR_PIN,
-        ANTICLOCKWISE
-    );
-
-
-    stepMotor(
-        NORMAL_SPEED
-    );
-
-
+    digitalWrite(DIR_PIN, ANTICLOCKWISE);
+    stepMotor(NORMAL_SPEED);
     currentPosition++;
-
-
 }
-
 
 
 // ==================================================
@@ -81,33 +56,18 @@ void moveForward()
 
 void moveBackward()
 {
-
-    if(currentPosition <= backwardLimit)
+    if (currentPosition <= backwardLimit)
     {
         Serial.println("BACKWARD LIMIT REACHED");
-
-        state=READY;
-
+        state = READY;
+        saveState(false);
         return;
     }
 
-
-    digitalWrite(
-        DIR_PIN,
-        CLOCKWISE
-    );
-
-
-    stepMotor(
-        NORMAL_SPEED
-    );
-
-
+    digitalWrite(DIR_PIN, CLOCKWISE);
+    stepMotor(NORMAL_SPEED);
     currentPosition--;
-
-
 }
-
 
 
 // ==================================================
@@ -116,51 +76,25 @@ void moveBackward()
 
 void moveForwardContinuous()
 {
-
-    if(currentPosition >= forwardLimit)
+    if (currentPosition >= forwardLimit)
     {
-
-        Serial.println(
-        "FORWARD LIMIT REACHED"
-        );
-
-
-        state=READY;
-
-
+        Serial.println("FORWARD LIMIT REACHED");
+        state = READY;
+        saveState(false);
         return;
-
     }
-
-
 
     moveForward();
 
+    static unsigned long lastReport = 0;
 
-
-    static unsigned long lastReport=0;
-
-
-    if(millis()-lastReport > 250)
+    if (millis() - lastReport > 250)
     {
-
-        Serial.print(
-        "MOVING_FORWARD POSITION:"
-        );
-
-
-        Serial.println(
-        currentPosition
-        );
-
-
-        lastReport=millis();
-
+        Serial.print("MOVING_FORWARD POSITION:");
+        Serial.println(currentPosition);
+        lastReport = millis();
     }
-
-
 }
-
 
 
 // ==================================================
@@ -169,195 +103,84 @@ void moveForwardContinuous()
 
 void moveBackwardContinuous()
 {
-
-
-    if(currentPosition <= backwardLimit)
+    if (currentPosition <= backwardLimit)
     {
-
-        Serial.println(
-        "BACKWARD LIMIT REACHED"
-        );
-
-
-        state=READY;
-
-
+        Serial.println("BACKWARD LIMIT REACHED");
+        state = READY;
+        saveState(false);
         return;
-
     }
-
-
 
     moveBackward();
 
+    static unsigned long lastReport = 0;
 
-
-    static unsigned long lastReport=0;
-
-
-    if(millis()-lastReport > 250)
+    if (millis() - lastReport > 250)
     {
-
-        Serial.print(
-        "MOVING_BACKWARD POSITION:"
-        );
-
-
-        Serial.println(
-        currentPosition
-        );
-
-
-        lastReport=millis();
-
+        Serial.print("MOVING_BACKWARD POSITION:");
+        Serial.println(currentPosition);
+        lastReport = millis();
     }
-
-
-
 }
-
-
 
 
 // ==================================================
 // MANUAL TOGGLE SWITCH
 // ==================================================
 
-bool lastForwardSwitch=false;
-
-bool lastBackwardSwitch=false;
-
+bool lastForwardSwitch = false;
+bool lastBackwardSwitch = false;
 
 
 void normalControl()
 {
+    bool forward = digitalRead(FORWARD_SWITCH) == LOW;
+    bool backward = digitalRead(BACKWARD_SWITCH) == LOW;
 
-
-    bool forward =
-    digitalRead(FORWARD_SWITCH)==LOW;
-
-
-
-    bool backward =
-    digitalRead(BACKWARD_SWITCH)==LOW;
-
-
-
-    if(forward && backward)
+    if (forward && backward)
     {
-
-        Serial.println(
-        "BOTH SWITCHES ACTIVE"
-        );
-
-
+        Serial.println("BOTH SWITCHES ACTIVE");
         return;
-
     }
 
-
-
-
-    if(forward && !lastForwardSwitch)
+    if (forward && !lastForwardSwitch)
     {
-
-
-        Serial.print(
-        "START FORWARD MOVE. STEPS:"
-        );
-
-
-        Serial.println(
-        forwardLimit-currentPosition
-        );
-
-
-        state=MOVING_FORWARD;
-
-
+        Serial.print("START FORWARD MOVE. STEPS:");
+        Serial.println(forwardLimit - currentPosition);
+        state = MOVING_FORWARD;
     }
 
-
-
-
-    if(backward && !lastBackwardSwitch)
+    if (backward && !lastBackwardSwitch)
     {
-
-
-        Serial.print(
-        "START BACKWARD MOVE. STEPS:"
-        );
-
-
-        Serial.println(
-        currentPosition-backwardLimit
-        );
-
-
-        state=MOVING_BACKWARD;
-
-
+        Serial.print("START BACKWARD MOVE. STEPS:");
+        Serial.println(currentPosition - backwardLimit);
+        state = MOVING_BACKWARD;
     }
 
-
-
-
-    lastForwardSwitch=forward;
-
-    lastBackwardSwitch=backward;
-
-
-
+    lastForwardSwitch = forward;
+    lastBackwardSwitch = backward;
 }
-
-
-
 
 
 // ==================================================
 // DASHBOARD JOG COMMAND
-// JOG 1  = forward limit
-// JOG -1 = backward limit
+// JOG 1  = move toward forward limit
+// JOG -1 = move toward backward limit
 // ==================================================
 
 void jog(long steps)
 {
-
-
-    if(steps > 0)
+    if (steps > 0)
     {
-
-        Serial.println(
-        "START MOVING FORWARD"
-        );
-
-
-        state=MOVING_FORWARD;
-
-
+        Serial.println("START MOVING FORWARD");
+        state = MOVING_FORWARD;
     }
-
-
-    else if(steps < 0)
+    else if (steps < 0)
     {
-
-
-        Serial.println(
-        "START MOVING BACKWARD"
-        );
-
-
-        state=MOVING_BACKWARD;
-
-
+        Serial.println("START MOVING BACKWARD");
+        state = MOVING_BACKWARD;
     }
-
-
-
 }
-
-
-
 
 
 // ==================================================
@@ -366,36 +189,18 @@ void jog(long steps)
 
 void updateMovement()
 {
-
-
-    switch(state)
+    switch (state)
     {
-
-
         case MOVING_FORWARD:
-
             moveForwardContinuous();
-
-        break;
-
-
+            break;
 
         case MOVING_BACKWARD:
-
             moveBackwardContinuous();
-
-        break;
-
-
+            break;
 
         default:
-
-            moving=false;
-
-        break;
-
-
+            moving = false;
+            break;
     }
-
-
 }

@@ -1,15 +1,28 @@
 {
-    "H7": {
-        "forward": 64560,
-        "backward": 50000
+    "motor1": {
+        "H7": {
+            "forward": 64560,
+            "backward": 50000
+        },
+        "Test": {
+            "forward": 35487,
+            "backward": 22529
+        }
     },
-    "ESC": {
-        "axis": "2",
-        "forward": 78000,
-        "backward": 70000
+    "motor2": {
+        "ESC": {
+            "forward": 78000,
+            "backward": 70000
+        }
     },
-    "Test": {
-        "forward": 35487,
-        "backward": 22529
+    "_meta": {
+        "motor1": {
+            "purpose": "H7 Pad-Test Fixture",
+            "active_project": null
+        },
+        "motor2": {
+            "purpose": "ESC Test Fixture",
+            "active_project": null
+        }
     }
 }

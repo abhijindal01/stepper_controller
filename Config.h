@@ -15,12 +15,10 @@
 #define HOME_TRIGGER HIGH
 
 
-
 // ================= EMERGENCY STOP =================
 
 #define ESTOP_PIN   5
 #define ESTOP_TRIGGER LOW
-
 
 
 // ================= MANUAL TOGGLE ==================
@@ -29,12 +27,10 @@
 #define BACKWARD_SWITCH  4
 
 
-
 // ================= MOTOR DIRECTION =================
 
 #define CLOCKWISE        HIGH
 #define ANTICLOCKWISE    LOW
-
 
 
 // ================= SPEED ===========================
@@ -44,29 +40,35 @@
 #define SLOW_HOME_SPEED     1000
 
 
-
 // ================= HOMING ==========================
 
 #define HOME_OFFSET_STEPS   5000
 #define HOME_WAIT_TIME      3000
 
 
-
 // ================= EEPROM ==========================
+// Limits block (compatible with v2.0.0 addresses)
+#define EEPROM_FORWARD          10
+#define EEPROM_BACKWARD         20
+#define EEPROM_MAGIC            30
+#define EEPROM_VALID            123
 
-#define EEPROM_FORWARD      10
-#define EEPROM_BACKWARD     20
-#define EEPROM_MAGIC        30
+// Reboot state persistence block (position + homed flag)
+#define EEPROM_POSITION         40
+#define EEPROM_HOMED            48
+#define EEPROM_STATE_MAGIC      52
+#define EEPROM_STATE_VALID      0x53545032UL
 
-#define EEPROM_VALID        123
+// Auto-backup interval (ms) to protect AVR EEPROM endurance
+#define POSITION_BACKUP_INTERVAL 1000UL
 
 
+// ================= LIMITS ==========================
+// Default / cleared travel limit steps (+/- 85,000, decreased from 2,000,000,000)
 
-// ================= LIMITS ===========================
-
-#define NO_FORWARD_LIMIT    65000
-#define NO_BACKWARD_LIMIT  -65000
-
+#define CLEAR_LIMIT_STEPS    85000L
+#define NO_FORWARD_LIMIT     CLEAR_LIMIT_STEPS
+#define NO_BACKWARD_LIMIT   (-CLEAR_LIMIT_STEPS)
 
 
 // ================= SERIAL ==========================
@@ -74,10 +76,9 @@
 #define SERIAL_SPEED 115200
 
 
-
 // ================= FIRMWARE ========================
 
-#define FIRMWARE_VERSION "2.0.0"
+#define FIRMWARE_VERSION "2.1.0"
 
 
 #endif
