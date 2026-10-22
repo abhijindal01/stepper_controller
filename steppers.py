@@ -42,6 +42,7 @@ _ASYNC_PREFIXES = (
     "FIRST HOME FOUND",
     "OFFSET COMPLETE",
     "FINAL HOMING",
+    "ORIGIN SET",
     "=================================",
     "STEPPER CONTROLLER",
     "FIRMWARE :",
@@ -49,6 +50,8 @@ _ASYNC_PREFIXES = (
     "NO LIMITS SAVED",
     "FORWARD LIMIT:",
     "BACKWARD LIMIT:",
+    "FORWARD=",
+    "BACKWARD=",
     "STARTING AUTOMATIC HOMING",
     "STATE RESTORED",
 )
