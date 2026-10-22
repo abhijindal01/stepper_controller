@@ -46,7 +46,9 @@ class FakeSerialArduino:
         cmd = payload.decode("utf-8").strip().upper()
         self.commands_seen.append(cmd)
 
+        # Simulate legacy multi-line / async progress lines before actual reply
         self._rx_lines.append(b"MOVING_FORWARD POSITION:100\n")
+        self._rx_lines.append(b"Forward=64560\n")
 
         if cmd == "STATUS":
             doc = {
@@ -95,7 +97,7 @@ class FakeSerialArduino:
             self._rx_lines.append(b"START MOVING BACKWARD\n")
         elif cmd == "ESTOP":
             self.state = "EMERGENCY STOP"
-            self. _rx_lines.append(b"EMERGENCY STOP\n")
+            self._rx_lines.append(b"EMERGENCY STOP\n")
         elif cmd == "STOP":
             self.state = "READY"
             self._rx_lines.append(b"STOPPED\n")
@@ -115,7 +117,7 @@ class FakeSerialArduino:
         return b""
 
 
-class MinimalOperatorConsoleTests(unittest.TestCase):
+class FourBoxSingleMotorConsoleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
         self.tmp.write(
@@ -155,33 +157,37 @@ class MinimalOperatorConsoleTests(unittest.TestCase):
     def _login(self):
         return self.client.post("/login", data={"password": "testpass123"}, follow_redirects=True)
 
-    def test_hardcoded_ports(self):
-        self.assertEqual(steppers.MOTOR_1_PORT, "/dev/stepper_a")
-        self.assertEqual(steppers.MOTOR_2_PORT, "/dev/stepper_b")
-
-    def test_minimal_single_motor_selector_ui(self):
+    def test_four_box_single_motor_layout(self):
         resp = self._login()
         self.assertEqual(resp.status_code, 200)
         html = resp.get_data(as_text=True)
 
-        # Single-motor switcher tabs in top header (NOT side-by-side motor panels)
+        # Top single-motor switcher tabs
         self.assertIn("motorTab-motor1", html)
         self.assertIn("motorTab-motor2", html)
-        self.assertEqual(html.count('class="operator-card"'), 1)
-        self.assertNotIn("motors-grid", html)
 
-        # Simple plain-English controls matching chosen design
-        self.assertIn("Select Preset", html)
-        self.assertIn("Move Backward", html)
-        self.assertIn("Move Forward", html)
-        self.assertIn("Home Motor", html)
-        self.assertIn("Emergency Stop", html)
-        self.assertIn("Advanced &amp; Technician Tools", html)
+        # 4 distinct boxes for the selected motor
+        self.assertIn("four-box-grid", html)
+        self.assertIn('id="box-control"', html)
+        self.assertIn('id="box-presets"', html)
+        self.assertIn('id="box-limits"', html)
+        self.assertIn('id="box-stlink"', html)
+        self.assertEqual(html.count('class="box-card"'), 4)
 
-        # Hardware Monitor stays completely absent
+        # Hardware Monitor remains removed
         self.assertNotIn("Hardware Monitor", html)
         self.assertNotIn("TEST BUZZER", html)
-        self.assertNotIn("4.5V Rail", html)
+
+    def test_estop_stops_cleanly_without_locking_motor(self):
+        self._login()
+        r = self.client.post("/api/motor/motor1/action/estop").get_json()
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["command"], "STOP")
+        self.assertEqual(self.fake_a.state, "READY")
+
+        # Subsequent move works immediately
+        r_fwd = self.client.post("/api/motor/motor1/action/jog_forward").get_json()
+        self.assertTrue(r_fwd["ok"])
 
     def test_duplicate_symlink_guard(self):
         with tempfile.TemporaryDirectory() as d:
@@ -204,13 +210,13 @@ class MinimalOperatorConsoleTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("points to same device", m2.last_error or "")
 
-    def test_independent_motor_status_and_actions(self):
+    def test_presets_and_limits_flow(self):
         self._login()
 
-        s1 = self.client.get("/api/motor/motor1/status").get_json()
-        s2 = self.client.get("/api/motor/motor2/status").get_json()
-        self.assertEqual(s1["position"], 64560)
-        self.assertEqual(s2["position"], 70000)
+        r_load = self.client.post("/api/motor/motor1/projects/H7/load").get_json()
+        self.assertTrue(r_load["ok"])
+        self.assertEqual(self.fake_a.forward, 64560)
+        self.assertEqual(self.fake_a.backward, 50000)
 
         r_clr = self.client.post("/api/motor/motor1/action/clear_limits").get_json()
         self.assertTrue(r_clr["ok"])

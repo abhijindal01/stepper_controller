@@ -79,7 +79,7 @@ void processSerial()
 
     if (cmd == "FORWARD")
     {
-        if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER || state == ESTOPPED)
+        if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER)
         {
             Serial.println("EMERGENCY STOP ACTIVE");
             return;
@@ -98,7 +98,7 @@ void processSerial()
 
     if (cmd == "BACKWARD")
     {
-        if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER || state == ESTOPPED)
+        if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER)
         {
             Serial.println("EMERGENCY STOP ACTIVE");
             return;
@@ -232,7 +232,7 @@ void processSerial()
 
     if (cmd.startsWith("JOG"))
     {
-        if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER || state == ESTOPPED)
+        if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER)
         {
             Serial.println("EMERGENCY STOP ACTIVE");
             return;

@@ -413,7 +413,8 @@ def motor_position(motor_id: str):
 ACTIONS = {
     "home": "HOME",
     "stop": "STOP",
-    "estop": "ESTOP",
+    "estop": "STOP",
+    "hard_estop": "ESTOP",
     "move_forward": "FORWARD",
     "move_backward": "BACKWARD",
     "jog_forward": "JOG 1",
