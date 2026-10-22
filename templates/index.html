@@ -2,42 +2,30 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Stepper Control Console · Dual-Axis RPi</title>
+<title>Stepper Controller</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <style>
 :root {
-    --bg-canvas: #090d16;
-    --bg-surface: #111827;
-    --bg-elevated: #172033;
-    --bg-inset: #0b101d;
-    --border-subtle: rgba(148, 163, 184, 0.14);
-    --border-strong: rgba(148, 163, 184, 0.26);
-    --text-primary: #f1f5f9;
-    --text-secondary: #94a3b8;
-    --text-muted: #64748b;
-
-    --blue: #2563eb;
-    --blue-hover: #1d4ed8;
-    --blue-soft: rgba(59, 130, 246, 0.14);
-    --blue-text: #93c5fd;
-
-    --green: #16a34a;
-    --green-hover: #15803d;
-    --green-soft: rgba(34, 197, 94, 0.14);
-    --green-text: #86efac;
-
-    --amber: #d97706;
-    --amber-hover: #b45309;
-    --amber-soft: rgba(245, 158, 11, 0.15);
-    --amber-text: #fcd34d;
-
-    --red: #dc2626;
-    --red-hover: #b91c1c;
-    --red-soft: rgba(239, 68, 68, 0.15);
-    --red-text: #fca5a5;
-
-    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --bg-page: #1c222b;
+    --bg-header: #181e26;
+    --bg-card: #2a313c;
+    --bg-control: #323a46;
+    --bg-control-hover: #3a4351;
+    --bg-inset: #232a34;
+    --border-subtle: rgba(255, 255, 255, 0.09);
+    --border-control: rgba(255, 255, 255, 0.15);
+    --text-main: #f3f4f6;
+    --text-secondary: #d1d5db;
+    --text-muted: #9ca3af;
+    --blue: #4374e0;
+    --blue-hover: #3664cc;
+    --blue-bar: #4f83f1;
+    --green: #4ade80;
+    --amber: #fbbf24;
+    --red: #c94444;
+    --red-hover: #b53838;
     --sans: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
 }
 
 * {
@@ -46,855 +34,607 @@
 
 body {
     margin: 0;
-    background: var(--bg-canvas);
-    color: var(--text-primary);
+    min-height: 100vh;
+    background: radial-gradient(circle at 50% 18%, #232a35 0%, var(--bg-page) 68%);
+    color: var(--text-main);
     font-family: var(--sans);
-    font-size: 14px;
+    font-size: 15px;
     line-height: 1.45;
     -webkit-font-smoothing: antialiased;
 }
 
-/* ==================== TOP COMMAND BAR ==================== */
+/* ==================== TOP BAR ==================== */
 .topbar {
-    position: sticky;
-    top: 0;
-    z-index: 40;
-    background: rgba(9, 13, 22, 0.9);
-    backdrop-filter: blur(12px);
+    background: var(--bg-header);
     border-bottom: 1px solid var(--border-subtle);
-    padding: 12px 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 16px;
-    flex-wrap: wrap;
-}
-
-.brand {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-}
-
-.brand-mark {
-    width: 36px;
-    height: 36px;
-    border-radius: 9px;
-    background: var(--blue-soft);
-    border: 1px solid rgba(59, 130, 246, 0.35);
-    color: #60a5fa;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-
-.brand-title {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: 0.03em;
-    margin: 0;
-}
-
-.brand-subtitle {
-    font-size: 12px;
-    color: var(--text-secondary);
-    margin: 1px 0 0;
-}
-
-.topbar-pills {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    flex-wrap: wrap;
-}
-
-.port-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 6px 12px;
-    border-radius: 999px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border-subtle);
-    font-size: 12px;
-    color: var(--text-secondary);
-}
-
-.port-pill code {
-    font-family: var(--mono);
-    color: var(--text-primary);
-    font-size: 11.5px;
-}
-
-.dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--text-muted);
-    flex-shrink: 0;
-}
-
-.dot.online {
-    background: #22c55e;
-    box-shadow: 0 0 8px rgba(34, 197, 94, 0.55);
-}
-
-.dot.offline {
-    background: #ef4444;
-}
-
-.dot.busy {
-    background: #f59e0b;
-    box-shadow: 0 0 8px rgba(245, 158, 11, 0.55);
-}
-
-.topbar-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-/* ==================== LAYOUT ==================== */
-.workspace {
-    max-width: 1560px;
-    margin: 0 auto;
-    padding: 20px 24px 48px;
-    display: flex;
-    flex-direction: column;
-    gap: 20px;
-}
-
-.motors-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 20px;
-    align-items: start;
-}
-
-@media (max-width: 1080px) {
-    .motors-grid {
-        grid-template-columns: 1fr;
-    }
-    .topbar {
-        padding: 12px 16px;
-    }
-    .workspace {
-        padding: 16px 14px 40px;
-    }
-}
-
-/* ==================== PANEL / CARD ==================== */
-.motor-panel,
-.stlink-panel {
-    background: var(--bg-surface);
-    border: 1px solid var(--border-subtle);
-    border-radius: 14px;
-    overflow: hidden;
-}
-
-.panel-header {
-    padding: 16px 20px;
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent);
-    border-bottom: 1px solid var(--border-subtle);
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-    flex-wrap: wrap;
-}
-
-.axis-identity {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-}
-
-.axis-tag {
-    width: 38px;
-    height: 38px;
-    border-radius: 10px;
-    background: var(--bg-elevated);
-    border: 1px solid var(--border-strong);
-    font-family: var(--mono);
-    font-weight: 700;
-    font-size: 13.5px;
-    color: var(--blue-text);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-}
-
-.axis-heading h2 {
-    margin: 0;
-    font-size: 16px;
-    font-weight: 700;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.port-badge {
-    font-family: var(--mono);
-    font-size: 11.5px;
-    font-weight: 500;
-    padding: 2px 8px;
-    border-radius: 6px;
-    background: var(--bg-inset);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-secondary);
-}
-
-.purpose-row {
-    margin-top: 3px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    color: var(--text-secondary);
-    font-size: 12.5px;
-}
-
-.purpose-edit-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    padding: 2px 5px;
-    border-radius: 5px;
-    cursor: pointer;
-    font-size: 11.5px;
-}
-
-.purpose-edit-btn:hover {
-    color: var(--blue-text);
-    background: var(--blue-soft);
-}
-
-.header-badges {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-}
-
-.state-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    padding: 5px 11px;
-    border-radius: 999px;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-    border: 1px solid var(--border-subtle);
-    background: var(--bg-inset);
-    color: var(--text-secondary);
-}
-
-.state-badge.ready {
-    background: var(--green-soft);
-    border-color: rgba(34, 197, 94, 0.35);
-    color: var(--green-text);
-}
-
-.state-badge.moving {
-    background: var(--amber-soft);
-    border-color: rgba(245, 158, 11, 0.38);
-    color: var(--amber-text);
-}
-
-.state-badge.estop,
-.state-badge.offline {
-    background: var(--red-soft);
-    border-color: rgba(239, 68, 68, 0.38);
-    color: var(--red-text);
-}
-
-.panel-body {
-    padding: 18px 20px;
-    display: flex;
-    flex-direction: column;
-    gap: 18px;
-}
-
-.offline-banner {
-    display: none;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 14px;
-    border-radius: 10px;
-    background: rgba(239, 68, 68, 0.09);
-    border: 1px solid rgba(239, 68, 68, 0.28);
-    color: var(--red-text);
-    font-size: 12.5px;
-}
-
-.offline-banner.visible {
-    display: flex;
-}
-
-/* ==================== TELEMETRY & GAUGE ==================== */
-.telemetry-box {
-    background: var(--bg-inset);
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px;
-    padding: 14px 16px;
-}
-
-.telemetry-top {
-    display: grid;
-    grid-template-columns: 1.3fr 1fr 1fr;
-    gap: 12px;
-    align-items: center;
-}
-
-@media (max-width: 560px) {
-    .telemetry-top {
-        grid-template-columns: 1fr 1fr;
-    }
-}
-
-.metric-label {
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--text-muted);
-    margin-bottom: 3px;
-}
-
-.metric-pos {
-    font-family: var(--mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 26px;
-    font-weight: 700;
-    color: var(--text-primary);
-    letter-spacing: -0.02em;
-}
-
-.metric-pos small {
-    font-size: 12px;
-    font-weight: 500;
-    color: var(--text-muted);
-    margin-left: 4px;
-}
-
-.metric-val {
-    font-family: var(--mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 14.5px;
-    font-weight: 600;
-    color: var(--text-primary);
-}
-
-.pill-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 3px 9px;
-    border-radius: 6px;
-    font-family: var(--mono);
-    font-size: 11.5px;
-    font-weight: 600;
-}
-
-.pill-tag.ok {
-    background: var(--green-soft);
-    color: var(--green-text);
-}
-
-.pill-tag.warn {
-    background: var(--amber-soft);
-    color: var(--amber-text);
-}
-
-.pill-tag.info {
-    background: var(--blue-soft);
-    color: var(--blue-text);
-}
-
-/* Travel range bar */
-.travel-wrap {
-    margin-top: 14px;
-    padding-top: 12px;
-    border-top: 1px solid var(--border-subtle);
-}
-
-.travel-labels {
-    display: flex;
-    justify-content: space-between;
-    font-family: var(--mono);
-    font-variant-numeric: tabular-nums;
-    font-size: 11.5px;
-    color: var(--text-secondary);
-    margin-bottom: 6px;
-}
-
-.travel-track {
-    position: relative;
-    height: 10px;
-    border-radius: 999px;
-    background: #1a2438;
-    border: 1px solid var(--border-subtle);
-    overflow: hidden;
-}
-
-.travel-origin {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    background: rgba(148, 163, 184, 0.35);
-    left: 50%;
-}
-
-.travel-fill {
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    background: linear-gradient(90deg, #2563eb, #38bdf8);
-    border-radius: 999px;
-    transition: width 0.25s ease, left 0.25s ease;
-}
-
-.travel-thumb {
-    position: absolute;
-    top: 50%;
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    background: #f8fafc;
-    border: 2px solid #38bdf8;
-    transform: translate(-50%, -50%);
-    transition: left 0.25s ease;
-}
-
-/* Digital switch strip */
-.io-strip {
-    margin-top: 12px;
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 6px;
-}
-
-.io-chip {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 5px 8px;
-    border-radius: 7px;
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid var(--border-subtle);
-    font-size: 11px;
-    color: var(--text-muted);
-    font-family: var(--mono);
-}
-
-.io-chip strong {
-    color: var(--text-secondary);
-    font-weight: 600;
-}
-
-.io-chip.active {
-    background: var(--amber-soft);
-    border-color: rgba(245, 158, 11, 0.35);
-    color: var(--amber-text);
-}
-
-.io-chip.active strong {
-    color: var(--amber-text);
-}
-
-.io-chip.danger {
-    background: var(--red-soft);
-    border-color: rgba(239, 68, 68, 0.4);
-    color: var(--red-text);
-}
-
-.io-chip.danger strong {
-    color: var(--red-text);
-}
-
-/* ==================== SECTIONS & BUTTONS ==================== */
-.section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.section-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-}
-
-.section-title {
-    font-size: 11.5px;
-    font-weight: 700;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--text-secondary);
-    margin: 0;
-}
-
-.section-caption {
-    font-size: 11.5px;
-    color: var(--text-muted);
-}
-
-.btn-grid-3 {
+    padding: 14px 28px;
     display: grid;
     grid-template-columns: 1fr auto 1fr;
-    gap: 8px;
+    align-items: center;
+    gap: 16px;
 }
 
-.btn-grid-2 {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 8px;
+.app-title {
+    font-size: 19px;
+    font-weight: 500;
+    color: var(--text-main);
+    margin: 0;
+    letter-spacing: -0.01em;
 }
 
-.btn-grid-equal-3 {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 8px;
+/* Segmented Motor Switcher (Select 1 motor at a time) */
+.motor-switcher {
+    display: inline-flex;
+    background: #202731;
+    border: 1px solid var(--border-control);
+    border-radius: 10px;
+    padding: 3px;
+    gap: 3px;
 }
 
-@media (max-width: 520px) {
-    .btn-grid-equal-3 {
-        grid-template-columns: 1fr;
-    }
-    .io-strip {
-        grid-template-columns: repeat(2, 1fr);
-    }
-}
-
-.btn {
+.motor-tab {
+    appearance: none;
+    border: none;
+    background: transparent;
+    color: #b8c0cc;
+    font-family: var(--sans);
+    font-size: 14.5px;
+    font-weight: 500;
+    padding: 9px 22px;
+    border-radius: 7px;
+    cursor: pointer;
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    gap: 7px;
-    padding: 9.5px 13px;
-    border-radius: 9px;
-    border: 1px solid var(--border-subtle);
-    background: var(--bg-elevated);
-    color: var(--text-primary);
-    font-family: var(--sans);
-    font-size: 13px;
-    font-weight: 600;
-    cursor: pointer;
-    user-select: none;
-    -webkit-user-select: none;
-    touch-action: manipulation;
-    transition: background 0.14s ease, border-color 0.14s ease, transform 0.06s ease;
-    text-decoration: none;
+    gap: 8px;
+    transition: background 0.15s ease, color 0.15s ease;
     white-space: nowrap;
 }
 
-.btn:hover {
-    background: #1f2b44;
-    border-color: var(--border-strong);
+.motor-tab:hover {
+    color: var(--text-main);
 }
 
-.btn:active {
-    transform: translateY(1px);
+.motor-tab.active {
+    background: #eaedf2;
+    color: #161b22;
+    font-weight: 600;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
 }
 
-.btn-sm {
-    padding: 6px 10px;
-    font-size: 12px;
-    border-radius: 7px;
+.tab-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #6b7280;
+    flex-shrink: 0;
 }
 
-.btn-primary {
-    background: var(--blue);
-    border-color: rgba(96, 165, 250, 0.35);
-    color: #ffffff;
+.tab-dot.online {
+    background: #22c55e;
 }
 
-.btn-primary:hover {
-    background: var(--blue-hover);
+.tab-dot.offline {
+    background: #ef4444;
 }
 
-.btn-success {
-    background: rgba(22, 163, 74, 0.18);
-    border-color: rgba(34, 197, 94, 0.38);
-    color: #bbf7d0;
-}
-
-.btn-success:hover {
-    background: rgba(22, 163, 74, 0.3);
-}
-
-.btn-amber {
-    background: rgba(217, 119, 6, 0.18);
-    border-color: rgba(245, 158, 11, 0.38);
-    color: #fde68a;
-}
-
-.btn-amber:hover {
-    background: rgba(217, 119, 6, 0.3);
-}
-
-.btn-danger {
-    background: rgba(220, 38, 38, 0.18);
-    border-color: rgba(239, 68, 68, 0.4);
-    color: #fecaca;
-}
-
-.btn-danger:hover {
-    background: rgba(220, 38, 38, 0.32);
-}
-
-.btn-danger-solid {
-    background: var(--red);
-    border-color: rgba(252, 165, 165, 0.35);
-    color: #ffffff;
-}
-
-.btn-danger-solid:hover {
-    background: var(--red-hover);
-}
-
-.btn.holding {
-    background: var(--blue);
-    border-color: #93c5fd;
-    color: #ffffff;
-    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.28);
-}
-
-/* ==================== PRESETS / PROJECTS ==================== */
-.presets-box {
-    background: var(--bg-inset);
-    border: 1px solid var(--border-subtle);
-    border-radius: 11px;
-    padding: 12px;
+.topbar-right {
     display: flex;
-    flex-direction: column;
+    justify-content: flex-end;
+}
+
+.signout-btn {
+    padding: 8px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--border-control);
+    background: transparent;
+    color: var(--text-secondary);
+    text-decoration: none;
+    font-size: 14px;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.signout-btn:hover {
+    background: rgba(255, 255, 255, 0.06);
+    color: #ffffff;
+}
+
+@media (max-width: 820px) {
+    .topbar {
+        grid-template-columns: 1fr auto;
+        padding: 12px 16px;
+    }
+    .motor-switcher {
+        grid-column: 1 / -1;
+        order: 3;
+        width: 100%;
+    }
+    .motor-tab {
+        flex: 1;
+        justify-content: center;
+        padding: 9px 10px;
+        font-size: 13.5px;
+    }
+}
+
+/* ==================== SINGLE CENTERED OPERATOR CARD ==================== */
+.main-wrap {
+    max-width: 640px;
+    margin: 38px auto 56px;
+    padding: 0 16px;
+}
+
+.operator-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    padding: 30px 32px 22px;
+    box-shadow: 0 22px 50px rgba(0, 0, 0, 0.28);
+}
+
+@media (max-width: 540px) {
+    .main-wrap {
+        margin: 20px auto 40px;
+    }
+    .operator-card {
+        padding: 22px 18px 18px;
+    }
+}
+
+/* Status Section */
+.status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.status-headline {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.status-dot {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--amber);
+    flex-shrink: 0;
+}
+
+.status-dot.ready {
+    background: var(--green);
+    box-shadow: 0 0 10px rgba(74, 222, 128, 0.45);
+}
+
+.status-dot.moving {
+    background: var(--amber);
+    box-shadow: 0 0 10px rgba(251, 191, 36, 0.45);
+}
+
+.status-dot.danger {
+    background: #ef4444;
+    box-shadow: 0 0 10px rgba(239, 68, 68, 0.45);
+}
+
+.status-label {
+    font-size: 29px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    margin: 0;
+}
+
+.reconnect-inline {
+    display: none;
+    padding: 6px 12px;
+    border-radius: 7px;
+    border: 1px solid var(--border-control);
+    background: var(--bg-control);
+    color: var(--text-main);
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.reconnect-inline.visible {
+    display: inline-flex;
+}
+
+.position-readout {
+    margin-top: 12px;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
     gap: 10px;
 }
 
-.preset-row {
+.position-number {
+    font-size: 21px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    color: #e5e7eb;
+}
+
+.active-preset-hint {
+    font-size: 13px;
+    color: var(--text-muted);
+}
+
+/* Clean Progress Bar */
+.progress-section {
+    margin-top: 14px;
+}
+
+.progress-track {
+    width: 100%;
+    height: 6px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+    position: relative;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: 999px;
+    background: var(--blue-bar);
+    transition: width 0.25s ease;
+}
+
+.progress-ends {
+    margin-top: 9px;
     display: flex;
-    gap: 8px;
-    align-items: center;
+    justify-content: space-between;
+    font-size: 14px;
+    color: var(--text-secondary);
+}
+
+.divider {
+    height: 1px;
+    background: var(--border-subtle);
+    margin: 22px 0;
+}
+
+/* Preset Row */
+.field-title {
+    display: block;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    margin-bottom: 10px;
+}
+
+.preset-bar {
+    display: flex;
+    gap: 12px;
+    align-items: stretch;
 }
 
 select,
 input[type="text"],
 input[type="number"] {
     width: 100%;
-    padding: 9px 11px;
+    padding: 11px 14px;
     border-radius: 8px;
-    border: 1px solid var(--border-subtle);
-    background: #0d1424;
-    color: var(--text-primary);
+    border: 1px solid var(--border-control);
+    background: var(--bg-inset);
+    color: var(--text-main);
     font-family: var(--sans);
-    font-size: 13px;
+    font-size: 15px;
     outline: none;
-    transition: border-color 0.14s ease;
+    transition: border-color 0.15s ease;
 }
 
 select:focus,
-input[type="text"]:focus,
-input[type="number"]:focus {
-    border-color: #3b82f6;
+input:focus {
+    border-color: var(--blue);
 }
 
-input[readonly] {
-    background: #141d30;
-    color: var(--text-secondary);
-}
-
-.preset-drawer {
-    display: none;
-    padding-top: 10px;
-    border-top: 1px solid var(--border-subtle);
-    flex-direction: column;
-    gap: 10px;
-}
-
-.preset-drawer.open {
-    display: flex;
-}
-
-.limit-field-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 10px;
-}
-
-@media (max-width: 520px) {
-    .limit-field-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-.limit-card {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid var(--border-subtle);
+.btn {
+    appearance: none;
+    border: 1px solid var(--border-control);
+    background: var(--bg-control);
+    color: var(--text-main);
+    font-family: var(--sans);
+    font-size: 15.5px;
+    font-weight: 500;
+    padding: 13px 18px;
     border-radius: 9px;
-    padding: 10px;
-    display: flex;
-    flex-direction: column;
-    gap: 7px;
-}
-
-.limit-card-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 6px;
-}
-
-.limit-card-top label {
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--text-secondary);
-}
-
-.mini-link {
-    background: transparent;
-    border: none;
-    color: var(--blue-text);
-    font-size: 11.5px;
-    font-weight: 600;
     cursor: pointer;
-    padding: 2px 5px;
-    border-radius: 4px;
-}
-
-.mini-link:hover {
-    background: var(--blue-soft);
-}
-
-.jog-capture-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
-}
-
-.persistence-note {
-    font-size: 11.5px;
-    color: var(--text-muted);
-    display: flex;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: manipulation;
+    transition: background 0.14s ease, border-color 0.14s ease, transform 0.06s ease;
+    display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 6px;
-    padding: 6px 10px;
+}
+
+.btn:hover {
+    background: var(--bg-control-hover);
+    border-color: rgba(255, 255, 255, 0.24);
+}
+
+.btn:active {
+    transform: translateY(1px);
+}
+
+.btn-blue {
+    background: var(--blue);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+    min-width: 122px;
+}
+
+.btn-blue:hover {
+    background: var(--blue-hover);
+}
+
+.btn-estop {
+    background: var(--red);
+    border-color: rgba(255, 255, 255, 0.12);
+    color: #ffffff;
+}
+
+.btn-estop:hover {
+    background: var(--red-hover);
+}
+
+.btn-sm {
+    padding: 9px 13px;
+    font-size: 13.5px;
     border-radius: 8px;
-    background: rgba(59, 130, 246, 0.06);
-    border: 1px solid rgba(59, 130, 246, 0.15);
 }
 
-/* ==================== ST-LINK PANEL ==================== */
-.stlink-grid {
-    display: grid;
-    grid-template-columns: 1.05fr 1.35fr;
-    gap: 18px;
-    align-items: start;
+.btn.holding {
+    background: var(--blue);
+    border-color: #93c5fd;
+    color: #ffffff;
 }
 
-@media (max-width: 960px) {
-    .stlink-grid {
-        grid-template-columns: 1fr;
-    }
-}
-
-.stlink-controls {
+/* Primary Motion Controls (Exact 2-row layout from chosen design) */
+.motion-area {
+    margin-top: 22px;
     display: flex;
     flex-direction: column;
+    gap: 14px;
+}
+
+.motion-row-top {
+    display: grid;
+    grid-template-columns: 1.25fr 0.85fr 1.25fr;
     gap: 12px;
 }
 
-.stlink-form-row {
+.motion-row-bottom {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    max-width: 440px;
+    width: 100%;
+    margin: 0 auto;
+}
+
+@media (max-width: 520px) {
+    .motion-row-top {
+        grid-template-columns: 1fr;
+    }
+    .motion-row-bottom {
+        grid-template-columns: 1fr;
+        max-width: none;
+    }
+    .preset-bar {
+        flex-direction: column;
+    }
+}
+
+/* ==================== COLLAPSIBLE TECHNICIAN DRAWER ==================== */
+.adv-toggle {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 6px 2px;
+    font-family: var(--sans);
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    text-align: left;
+}
+
+.adv-toggle:hover {
+    color: #ffffff;
+}
+
+.adv-toggle-sub {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 6px;
+}
+
+.adv-chevron {
+    transition: transform 0.18s ease;
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.adv-toggle.open .adv-chevron {
+    transform: rotate(180deg);
+}
+
+.adv-drawer {
+    display: none;
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border-subtle);
+}
+
+.adv-drawer.open {
+    display: block;
+}
+
+/* Sub-tabs inside Advanced Tools so even Technician view stays tidy */
+.subtabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 16px;
+    background: var(--bg-inset);
+    padding: 4px;
+    border-radius: 9px;
+    border: 1px solid var(--border-subtle);
+}
+
+.subtab-btn {
+    flex: 1;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 500;
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.subtab-btn.active {
+    background: var(--bg-control);
+    color: var(--text-main);
+}
+
+.subpanel {
+    display: none;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.subpanel.active {
+    display: flex;
+}
+
+.adv-group {
+    background: var(--bg-inset);
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.adv-group-title {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin: 0;
+}
+
+.grid-2 {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 10px;
 }
 
-@media (max-width: 560px) {
-    .stlink-form-row {
+.grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+@media (max-width: 520px) {
+    .grid-2, .grid-3 {
         grid-template-columns: 1fr;
     }
 }
 
-.field-group label {
-    display: block;
-    font-size: 11.5px;
-    font-weight: 600;
-    color: var(--text-secondary);
-    margin-bottom: 5px;
+.mini-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 12.5px;
+    color: var(--text-muted);
+}
+
+.link-btn {
+    background: transparent;
+    border: none;
+    color: #7aa2f7;
+    font-size: 12.5px;
+    cursor: pointer;
+    padding: 2px 4px;
+}
+
+.link-btn:hover {
+    text-decoration: underline;
+}
+
+.meta-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    font-size: 12px;
+    font-family: var(--mono);
+    color: var(--text-muted);
+}
+
+.meta-pill {
+    padding: 4px 8px;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border-subtle);
 }
 
 .stlink-log {
     width: 100%;
-    min-height: 225px;
-    padding: 12px;
-    border-radius: 10px;
+    min-height: 150px;
+    padding: 10px;
+    border-radius: 8px;
     border: 1px solid var(--border-subtle);
-    background: #060911;
+    background: #141920;
     color: #cbd5e1;
     font-family: var(--mono);
     font-size: 12px;
-    line-height: 1.5;
     resize: vertical;
     white-space: pre-wrap;
 }
 
-/* ==================== TOASTS & MODAL ==================== */
-.toast-stack {
+/* ==================== TOAST & MODAL ==================== */
+.toast-area {
     position: fixed;
-    right: 20px;
     bottom: 20px;
+    right: 20px;
     z-index: 100;
     display: flex;
     flex-direction: column;
     gap: 8px;
-    max-width: 380px;
+    max-width: 340px;
 }
 
 .toast {
     padding: 11px 15px;
-    border-radius: 10px;
-    background: #172135;
-    border: 1px solid var(--border-strong);
-    color: var(--text-primary);
-    font-size: 13px;
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    animation: slideIn 0.16s ease-out;
+    border-radius: 9px;
+    background: #232a34;
+    border: 1px solid var(--border-control);
+    color: var(--text-main);
+    font-size: 13.5px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.4);
 }
 
-.toast.ok {
-    border-left: 3px solid #22c55e;
-}
-
-.toast.err {
-    border-left: 3px solid #ef4444;
-}
-
-.toast.info {
-    border-left: 3px solid #3b82f6;
-}
-
-@keyframes slideIn {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-}
+.toast.ok { border-left: 3px solid var(--green); }
+.toast.err { border-left: 3px solid #ef4444; }
+.toast.info { border-left: 3px solid var(--blue-bar); }
 
 .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(3, 7, 18, 0.72);
-    backdrop-filter: blur(4px);
+    background: rgba(12, 16, 22, 0.72);
     z-index: 90;
     display: none;
     align-items: center;
@@ -906,25 +646,25 @@ input[readonly] {
     display: flex;
 }
 
-.modal-card {
+.modal-box {
     width: 100%;
-    max-width: 420px;
-    background: var(--bg-surface);
-    border: 1px solid var(--border-strong);
-    border-radius: 14px;
+    max-width: 400px;
+    background: var(--bg-card);
+    border: 1px solid var(--border-control);
+    border-radius: 13px;
     padding: 22px;
-    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.55);
+    box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
 }
 
-.modal-card h3 {
+.modal-box h3 {
     margin: 0 0 8px;
-    font-size: 16px;
+    font-size: 17px;
 }
 
-.modal-card p {
+.modal-box p {
     margin: 0 0 18px;
-    color: var(--text-secondary);
-    font-size: 13.5px;
+    color: var(--text-muted);
+    font-size: 14px;
 }
 
 .modal-actions {
@@ -936,644 +676,668 @@ input[readonly] {
 </head>
 <body>
 
-<!-- ==================== TOP COMMAND BAR ==================== -->
+<!-- ==================== TOP HEADER WITH MOTOR SELECTOR ==================== -->
 <header class="topbar">
-    <div class="brand">
-        <div class="brand-mark">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-            </svg>
-        </div>
-        <div>
-            <h1 class="brand-title">STEPPER CONTROL CONSOLE</h1>
-            <p class="brand-subtitle">1 Raspberry Pi · 2 Hardcoded Arduinos · EEPROM State Persistence</p>
-        </div>
-    </div>
+    <h1 class="app-title">Stepper Controller</h1>
 
-    <div class="topbar-pills">
+    <div class="motor-switcher" role="tablist" aria-label="Select Motor">
         {% for m in motors %}
-        <div class="port-pill" id="topPill-{{ m.id }}">
-            <span class="dot {{ 'online' if m.connected else 'offline' }}" id="topDot-{{ m.id }}"></span>
-            <strong>{{ m.name }}</strong>
-            <code>{{ m.port }}</code>
-            <span id="topState-{{ m.id }}">{{ 'ONLINE' if m.connected else 'OFFLINE' }}</span>
-        </div>
+        <button
+            type="button"
+            role="tab"
+            class="motor-tab {% if loop.first %}active{% endif %}"
+            id="motorTab-{{ m.id }}"
+            onclick="selectMotor('{{ m.id }}')"
+        >
+            <span class="tab-dot {{ 'online' if m.connected else 'offline' }}" id="tabDot-{{ m.id }}"></span>
+            <span id="tabLabel-{{ m.id }}">
+                {{ m.name }}{% if m.purpose %} &middot; {{ m.purpose }}{% endif %}
+            </span>
+        </button>
         {% endfor %}
     </div>
 
-    <div class="topbar-actions">
-        <button type="button" class="btn btn-sm" onclick="reconnectAll()">
-            Reconnect Ports
-        </button>
-        <button type="button" class="btn btn-sm btn-danger-solid" onclick="estopAll()">
-            E-STOP ALL
-        </button>
-        <a class="btn btn-sm" href="/logout">Sign Out</a>
+    <div class="topbar-right">
+        <a class="signout-btn" href="/logout">Sign Out</a>
     </div>
 </header>
 
-<!-- ==================== MAIN WORKSPACE ==================== -->
-<main class="workspace">
+<!-- ==================== SINGLE MOTOR OPERATOR CARD ==================== -->
+<main class="main-wrap">
+    <section class="operator-card">
 
-    <!-- SIDE-BY-SIDE DUAL MOTOR MODULES -->
-    <div class="motors-grid">
-        {% for m in motors %}
-        {% set mid = m.id %}
-        {% set mprojects = projects.get(mid, {}) %}
-        <section class="motor-panel" id="panel-{{ mid }}" data-motor-id="{{ mid }}">
-            <!-- Panel Header -->
-            <div class="panel-header">
-                <div class="axis-identity">
-                    <div class="axis-tag">M{{ loop.index }}</div>
-                    <div class="axis-heading">
-                        <h2>
-                            {{ m.name }}
-                            <span class="port-badge">{{ m.port }}</span>
-                        </h2>
-                        <div class="purpose-row">
-                            <span>Purpose:</span>
-                            <strong id="purposeText-{{ mid }}">{{ m.purpose }}</strong>
-                            <button type="button" class="purpose-edit-btn" onclick="openPurposeModal('{{ mid }}')" title="Set desired purpose label">
-                                Rename
-                            </button>
+        <!-- Friendly Status + Step Position + Progress Bar -->
+        <div class="status-header">
+            <div class="status-headline">
+                <span class="status-dot" id="statusDot"></span>
+                <h2 class="status-label" id="statusLabel">Connecting…</h2>
+            </div>
+            <button type="button" class="reconnect-inline" id="reconnectBtn" onclick="reconnectActiveMotor()">
+                Reconnect
+            </button>
+        </div>
+
+        <div class="position-readout">
+            <span class="position-number" id="positionValue">0</span>
+            <span class="active-preset-hint" id="presetHint"></span>
+        </div>
+
+        <div class="progress-section">
+            <div class="progress-track">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-ends">
+                <span>Backward</span>
+                <span>Forward</span>
+            </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Preset Selector -->
+        <div>
+            <label class="field-title" for="presetSelect">Select Preset</label>
+            <div class="preset-bar">
+                <select id="presetSelect"></select>
+                <button type="button" class="btn btn-blue" onclick="loadSelectedPreset()">
+                    Load
+                </button>
+            </div>
+        </div>
+
+        <!-- Simple, Unmistakable Motion Buttons -->
+        <div class="motion-area">
+            <div class="motion-row-top">
+                <button type="button" class="btn" onclick="runAction('jog_backward', 'Moving backward')">
+                    Move Backward
+                </button>
+                <button type="button" class="btn" onclick="runAction('stop', 'Stopped')">
+                    Stop
+                </button>
+                <button type="button" class="btn" onclick="runAction('jog_forward', 'Moving forward')">
+                    Move Forward
+                </button>
+            </div>
+
+            <div class="motion-row-bottom">
+                <button type="button" class="btn" onclick="runAction('home', 'Homing motor…')">
+                    Home Motor
+                </button>
+                <button type="button" class="btn btn-estop" onclick="runAction('estop', 'Emergency stop activated')">
+                    Emergency Stop
+                </button>
+            </div>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- Quiet Collapsible Drawer for Technician / Setup Tasks -->
+        <button type="button" class="adv-toggle" id="advToggleBtn" onclick="toggleAdvanced()">
+            <span>
+                Advanced &amp; Technician Tools
+                <span class="adv-toggle-sub">(Limits, Add Preset, ST-LINK Flash)</span>
+            </span>
+            <span class="adv-chevron">&#9662;</span>
+        </button>
+
+        <div class="adv-drawer" id="advDrawer">
+            <div class="subtabs">
+                <button type="button" class="subtab-btn active" data-tab="presets" onclick="setAdvTab('presets')">
+                    Add / Manage Presets
+                </button>
+                <button type="button" class="subtab-btn" data-tab="limits" onclick="setAdvTab('limits')">
+                    Limits &amp; Calibration
+                </button>
+                <button type="button" class="subtab-btn" data-tab="stlink" onclick="setAdvTab('stlink')">
+                    ST-LINK Flash
+                </button>
+            </div>
+
+            <!-- SUBPANEL 1: ADD / MANAGE PRESETS & MOTOR LABEL -->
+            <div class="subpanel active" id="subpanel-presets">
+                <div class="adv-group">
+                    <p class="adv-group-title">Save New or Updated Preset (for Selected Motor)</p>
+                    <input type="text" id="newPresetName" placeholder="Preset name (e.g. H7, ESC)">
+
+                    <div class="grid-2">
+                        <div>
+                            <div class="mini-row">
+                                <span>Backward Steps</span>
+                                <button type="button" class="link-btn" onclick="useCurrentStep('backward')">Use current</button>
+                            </div>
+                            <input type="number" id="newPresetBackward" placeholder="-85000">
                         </div>
+                        <div>
+                            <div class="mini-row">
+                                <span>Forward Steps</span>
+                                <button type="button" class="link-btn" onclick="useCurrentStep('forward')">Use current</button>
+                            </div>
+                            <input type="number" id="newPresetForward" placeholder="85000">
+                        </div>
+                    </div>
+
+                    <div class="grid-2">
+                        <button type="button" class="btn btn-sm hold-jog" data-dir="backward">
+                            Hold to Jog Backward
+                        </button>
+                        <button type="button" class="btn btn-sm hold-jog" data-dir="forward">
+                            Hold to Jog Forward
+                        </button>
+                    </div>
+
+                    <div class="grid-2">
+                        <button type="button" class="btn btn-sm btn-blue" onclick="saveNewPreset()">
+                            Save Preset
+                        </button>
+                        <button type="button" class="btn btn-sm" onclick="deleteSelectedPreset()">
+                            Delete Selected Preset
+                        </button>
                     </div>
                 </div>
 
-                <div class="header-badges">
-                    <button type="button" class="btn btn-sm" onclick="reconnectMotor('{{ mid }}')" title="Reconnect hardcoded Arduino port">
-                        Reconnect
-                    </button>
-                    <span class="state-badge {{ 'ready' if m.connected else 'offline' }}" id="stateBadge-{{ mid }}">
-                        <span class="dot {{ 'online' if m.connected else 'offline' }}" id="stateDot-{{ mid }}"></span>
-                        <span id="stateText-{{ mid }}">{{ 'STARTING' if m.connected else 'OFFLINE' }}</span>
-                    </span>
+                <div class="adv-group">
+                    <p class="adv-group-title">Motor Name / Purpose Label</p>
+                    <div class="preset-bar">
+                        <input type="text" id="purposeInput" placeholder="e.g. H7 Fixture or ESC Fixture">
+                        <button type="button" class="btn btn-sm" onclick="saveMotorPurpose()">
+                            Update Label
+                        </button>
+                    </div>
                 </div>
             </div>
 
-            <div class="panel-body">
-                <!-- Disconnected warning -->
-                <div class="offline-banner {{ '' if m.connected else 'visible' }}" id="offlineBanner-{{ mid }}">
-                    <span id="offlineMsg-{{ mid }}">Arduino offline on {{ m.port }}{% if m.error %} — {{ m.error }}{% endif %}</span>
-                    <button type="button" class="btn btn-sm" onclick="reconnectMotor('{{ mid }}')">Retry</button>
-                </div>
-
-                <!-- Live Telemetry + Travel Range -->
-                <div class="telemetry-box">
-                    <div class="telemetry-top">
-                        <div>
-                            <div class="metric-label">Current Position</div>
-                            <div class="metric-pos">
-                                <span id="pos-{{ mid }}">0</span><small>steps</small>
-                            </div>
-                        </div>
-                        <div>
-                            <div class="metric-label">Reference Status</div>
-                            <div>
-                                <span class="pill-tag warn" id="homedBadge-{{ mid }}">UNHOMED</span>
-                            </div>
-                        </div>
-                        <div>
-                            <div class="metric-label">Active Preset</div>
-                            <div>
-                                <span class="pill-tag info" id="activePreset-{{ mid }}">{{ m.active_project or 'Manual / Default' }}</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="travel-wrap">
-                        <div class="travel-labels">
-                            <span>BWD: <strong id="bwdLim-{{ mid }}">-{{ "{:,}".format(clear_limit_steps) }}</strong></span>
-                            <span>ORIGIN: 0</span>
-                            <span>FWD: <strong id="fwdLim-{{ mid }}">+{{ "{:,}".format(clear_limit_steps) }}</strong></span>
-                        </div>
-                        <div class="travel-track">
-                            <div class="travel-origin" id="originTick-{{ mid }}"></div>
-                            <div class="travel-fill" id="travelFill-{{ mid }}" style="left:50%;width:0%;"></div>
-                            <div class="travel-thumb" id="travelThumb-{{ mid }}" style="left:50%;"></div>
-                        </div>
-                    </div>
-
-                    <div class="io-strip">
-                        <div class="io-chip" id="ioHome-{{ mid }}">
-                            <span>HOME SW</span><strong id="ioHomeVal-{{ mid }}">--</strong>
-                        </div>
-                        <div class="io-chip" id="ioBwd-{{ mid }}">
-                            <span>BWD SW</span><strong id="ioBwdVal-{{ mid }}">--</strong>
-                        </div>
-                        <div class="io-chip" id="ioFwd-{{ mid }}">
-                            <span>FWD SW</span><strong id="ioFwdVal-{{ mid }}">--</strong>
-                        </div>
-                        <div class="io-chip" id="ioEstop-{{ mid }}">
-                            <span>E-STOP</span><strong id="ioEstopVal-{{ mid }}">--</strong>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Motion Control -->
-                <div class="section">
-                    <div class="section-head">
-                        <h3 class="section-title">Motion Control</h3>
-                        <span class="section-caption">Travel to limit or hold to jog</span>
-                    </div>
-
-                    <div class="btn-grid-3">
-                        <button type="button" class="btn btn-amber" onclick="motorAction('{{ mid }}', 'jog_backward', 'Moving toward backward limit')">
-                            &#9664; To Backward Limit
+            <!-- SUBPANEL 2: LIMITS, MANUAL JOG & EEPROM -->
+            <div class="subpanel" id="subpanel-limits">
+                <div class="adv-group">
+                    <p class="adv-group-title">Manual Hold-to-Jog</p>
+                    <div class="grid-2">
+                        <button type="button" class="btn btn-sm hold-jog" data-dir="backward">
+                            Hold Backward
                         </button>
-                        <button type="button" class="btn" onclick="motorAction('{{ mid }}', 'stop', 'Stopped')">
-                            &#9632; Stop
-                        </button>
-                        <button type="button" class="btn btn-success" onclick="motorAction('{{ mid }}', 'jog_forward', 'Moving toward forward limit')">
-                            To Forward Limit &#9654;
-                        </button>
-                    </div>
-
-                    <div class="btn-grid-2">
-                        <button
-                            type="button"
-                            class="btn hold-jog-btn"
-                            data-motor="{{ mid }}"
-                            data-dir="backward"
-                        >
-                            &#9664;&#9664; Hold Manual Backward
-                        </button>
-                        <button
-                            type="button"
-                            class="btn hold-jog-btn"
-                            data-motor="{{ mid }}"
-                            data-dir="forward"
-                        >
-                            Hold Manual Forward &#9654;&#9654;
-                        </button>
-                    </div>
-
-                    <div class="btn-grid-2">
-                        <button type="button" class="btn btn-primary" onclick="motorAction('{{ mid }}', 'home', 'Homing sequence started')">
-                            &#8962; Home Axis
-                        </button>
-                        <button type="button" class="btn btn-danger" onclick="motorAction('{{ mid }}', 'estop', 'Emergency stop engaged')">
-                            &#9888; Emergency Stop
+                        <button type="button" class="btn btn-sm hold-jog" data-dir="forward">
+                            Hold Forward
                         </button>
                     </div>
                 </div>
 
-                <!-- Limit & EEPROM Reboot Persistence -->
-                <div class="section">
-                    <div class="section-head">
-                        <h3 class="section-title">Travel Limits &amp; Reboot Persistence</h3>
-                        <span class="section-caption">Clear range: &plusmn;{{ "{:,}".format(clear_limit_steps) }} steps</span>
-                    </div>
-
-                    <div class="btn-grid-equal-3">
-                        <button type="button" class="btn btn-sm" onclick="motorAction('{{ mid }}', 'save_backward', 'Saved current position as backward limit')">
+                <div class="adv-group">
+                    <p class="adv-group-title">Travel Limits (Clear = &plusmn;{{ "{:,}".format(clear_limit_steps) }} steps)</p>
+                    <div class="grid-3">
+                        <button type="button" class="btn btn-sm" onclick="runAction('save_backward', 'Backward limit saved')">
                             Set Backward Here
                         </button>
-                        <button type="button" class="btn btn-sm" onclick="motorAction('{{ mid }}', 'save_forward', 'Saved current position as forward limit')">
+                        <button type="button" class="btn btn-sm" onclick="runAction('save_forward', 'Forward limit saved')">
                             Set Forward Here
                         </button>
-                        <button type="button" class="btn btn-sm btn-danger" onclick="confirmClearLimits('{{ mid }}')">
+                        <button type="button" class="btn btn-sm" onclick="confirmClearLimits()">
                             Clear (&plusmn;{{ "{:,}".format(clear_limit_steps) }})
                         </button>
                     </div>
-
-                    <div class="btn-grid-2">
-                        <button type="button" class="btn btn-sm" onclick="motorAction('{{ mid }}', 'save_position', 'Current position saved to EEPROM')">
-                            Save Position Now
-                        </button>
-                        <button type="button" class="btn btn-sm" onclick="confirmResetState('{{ mid }}')">
-                            Reset Stored State
-                        </button>
-                    </div>
-
-                    <div class="persistence-note">
-                        <span>EEPROM auto-backups position, homed status &amp; limits across Arduino reboots.</span>
-                    </div>
                 </div>
 
-                <!-- Independent Per-Motor Presets -->
-                <div class="section">
-                    <div class="section-head">
-                        <h3 class="section-title">Project Presets ({{ m.name }})</h3>
-                        <button type="button" class="btn btn-sm" onclick="togglePresetDrawer('{{ mid }}')" id="drawerToggle-{{ mid }}">
-                            + New / Edit Preset
+                <div class="adv-group">
+                    <p class="adv-group-title">Arduino Reboot Memory &amp; Diagnostics</p>
+                    <div class="grid-3">
+                        <button type="button" class="btn btn-sm" onclick="runAction('save_position', 'Position saved to Arduino EEPROM')">
+                            Save Position
+                        </button>
+                        <button type="button" class="btn btn-sm" onclick="confirmResetState()">
+                            Reset Memory
+                        </button>
+                        <button type="button" class="btn btn-sm" onclick="reconnectActiveMotor()">
+                            Reconnect Port
                         </button>
                     </div>
-
-                    <div class="presets-box">
-                        <div class="preset-row">
-                            <select id="projectSelect-{{ mid }}">
-                                {% if mprojects %}
-                                    {% for pname, pdata in mprojects.items() %}
-                                    <option value="{{ pname }}" {% if m.active_project == pname %}selected{% endif %}>
-                                        {{ pname }}  [BWD: {{ pdata.backward }} → FWD: {{ pdata.forward }}]
-                                    </option>
-                                    {% endfor %}
-                                {% else %}
-                                    <option value="">(No saved presets for {{ m.name }})</option>
-                                {% endif %}
-                            </select>
-                            <button type="button" class="btn btn-primary" onclick="loadProject('{{ mid }}')">
-                                Load
-                            </button>
-                            <button type="button" class="btn btn-danger" onclick="confirmDeleteProject('{{ mid }}')" title="Delete selected preset">
-                                Delete
-                            </button>
-                        </div>
-
-                        <!-- Create / Update Preset Drawer -->
-                        <div class="preset-drawer" id="presetDrawer-{{ mid }}">
-                            <div>
-                                <input type="text" id="newName-{{ mid }}" placeholder="Preset name (e.g. H7, ESC, Jig-A)">
-                            </div>
-
-                            <div class="limit-field-grid">
-                                <!-- Backward Limit Field -->
-                                <div class="limit-card">
-                                    <div class="limit-card-top">
-                                        <label for="newBackward-{{ mid }}">Backward Limit (steps)</label>
-                                        <button type="button" class="mini-link" onclick="fillCurrentPos('{{ mid }}', 'backward')">
-                                            Use Current
-                                        </button>
-                                    </div>
-                                    <input type="number" id="newBackward-{{ mid }}" placeholder="-85000">
-                                    <div class="jog-capture-row">
-                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="backward" data-target="backward">
-                                            Hold &#9664;
-                                        </button>
-                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="forward" data-target="backward">
-                                            Hold &#9654;
-                                        </button>
-                                    </div>
-                                </div>
-
-                                <!-- Forward Limit Field -->
-                                <div class="limit-card">
-                                    <div class="limit-card-top">
-                                        <label for="newForward-{{ mid }}">Forward Limit (steps)</label>
-                                        <button type="button" class="mini-link" onclick="fillCurrentPos('{{ mid }}', 'forward')">
-                                            Use Current
-                                        </button>
-                                    </div>
-                                    <input type="number" id="newForward-{{ mid }}" placeholder="85000">
-                                    <div class="jog-capture-row">
-                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="backward" data-target="forward">
-                                            Hold &#9664;
-                                        </button>
-                                        <button type="button" class="btn btn-sm hold-capture-btn" data-motor="{{ mid }}" data-dir="forward" data-target="forward">
-                                            Hold &#9654;
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="btn-grid-2">
-                                <button type="button" class="btn" onclick="togglePresetDrawer('{{ mid }}')">
-                                    Cancel
-                                </button>
-                                <button type="button" class="btn btn-success" onclick="saveProject('{{ mid }}')">
-                                    Save Preset
-                                </button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-        {% endfor %}
-    </div>
-
-    <!-- ==================== ST-LINK / STM32H743 PROGRAMMING ==================== -->
-    <section class="stlink-panel">
-        <div class="panel-header">
-            <div class="axis-identity">
-                <div class="axis-tag">SWD</div>
-                <div class="axis-heading">
-                    <h2>
-                        ST-LINK / STM32H743 Fixture Programming
-                        <span class="port-badge">OpenOCD · No NRST</span>
-                    </h2>
-                    <div class="purpose-row">
-                        Seat pogo contact (forward limit), probe SWD, flash &amp; verify firmware, then soft-run or mechanical power-cycle.
+                    <div class="meta-strip">
+                        <span class="meta-pill" id="diagPort">Port: --</span>
+                        <span class="meta-pill" id="diagLimits">Limits: --</span>
+                        <span class="meta-pill" id="diagHomed">Homed: --</span>
+                        <span class="meta-pill" id="diagSwitches">Home SW: -- | E-Stop: --</span>
                     </div>
                 </div>
             </div>
 
-            <div class="header-badges">
-                <span class="state-badge" id="stlinkUsbBadge">
-                    <span class="dot" id="stlinkUsbDot"></span>
-                    <span>USB: <strong id="stlinkUsbText">--</strong></span>
-                </span>
-                <span class="state-badge" id="stlinkSwdBadge">
-                    <span class="dot" id="stlinkSwdDot"></span>
-                    <span>SWD: <strong id="stlinkSwdText">IDLE</strong></span>
-                </span>
-                <span class="state-badge">
-                    <span>VTarget: <strong id="stlinkVoltage">--</strong></span>
-                </span>
-            </div>
-        </div>
+            <!-- SUBPANEL 3: ST-LINK / H7 FLASH -->
+            <div class="subpanel" id="subpanel-stlink">
+                <div class="adv-group">
+                    <div class="meta-strip">
+                        <span class="meta-pill" id="stlinkUsbPill">ST-LINK USB: --</span>
+                        <span class="meta-pill" id="stlinkSwdPill">SWD: IDLE</span>
+                        <span class="meta-pill" id="stlinkVoltPill">VTarget: --</span>
+                    </div>
 
-        <div class="panel-body">
-            <div class="stlink-grid">
-                <div class="stlink-controls">
-                    <div class="stlink-form-row">
-                        <div class="field-group">
-                            <label for="stlinkMotor">Contact Fixture Axis</label>
-                            <select id="stlinkMotor">
-                                {% for m in motors %}
-                                <option value="{{ m.id }}" {% if m.id == stlink_default_motor %}selected{% endif %}>
-                                    {{ m.name }} ({{ m.port }})
-                                </option>
-                                {% endfor %}
+                    <div class="grid-2">
+                        <div>
+                            <div class="mini-row"><span>Firmware Image</span></div>
+                            <select id="stlinkImage">
+                                <option value="">Scanning…</option>
                             </select>
                         </div>
-
-                        <div class="field-group">
-                            <label for="stlinkBase">.bin Base Address (ignored for .hex)</label>
+                        <div>
+                            <div class="mini-row"><span>.bin Base (ignored for .hex)</span></div>
                             <select id="stlinkBase">
-                                <option value="">Auto (combined → 0x08000000, app → 0x08020000)</option>
-                                <option value="0x08000000">0x08000000 · Combined / Bootloader</option>
-                                <option value="0x08020000">0x08020000 · App Only (BL present)</option>
+                                <option value="">Auto</option>
+                                <option value="0x08000000">0x08000000 (Combined / BL)</option>
+                                <option value="0x08020000">0x08020000 (App Only)</option>
                             </select>
                         </div>
                     </div>
 
-                    <div class="field-group">
-                        <label for="stlinkImage">Firmware Image (`firmware/indi_h743/`)</label>
-                        <select id="stlinkImage">
-                            <option value="">Scanning firmware directory…</option>
-                        </select>
+                    <div class="grid-3">
+                        <button type="button" class="btn btn-sm" onclick="stlinkContact()">1. Seat Contact</button>
+                        <button type="button" class="btn btn-sm" onclick="stlinkProbe()">2. Probe SWD</button>
+                        <button type="button" class="btn btn-sm btn-blue" onclick="stlinkFlash()">3. Flash</button>
                     </div>
 
-                    <div class="btn-grid-equal-3">
-                        <button type="button" class="btn" onclick="stlinkContact()">
-                            1. Seat Contact
-                        </button>
-                        <button type="button" class="btn" onclick="stlinkProbe()">
-                            2. Probe SWD
-                        </button>
-                        <button type="button" class="btn btn-success" onclick="stlinkFlash()">
-                            3. Flash Image
-                        </button>
+                    <div class="grid-2">
+                        <button type="button" class="btn btn-sm" onclick="stlinkSoftRun()">Soft Run</button>
+                        <button type="button" class="btn btn-sm" onclick="stlinkPowerCycle()">Power Cycle</button>
                     </div>
 
-                    <div class="btn-grid-2">
-                        <button type="button" class="btn btn-amber" onclick="stlinkSoftRun()">
-                            4a. Soft Run
-                        </button>
-                        <button type="button" class="btn btn-amber" onclick="stlinkPowerCycle()">
-                            4b. Power Cycle (Bwd → Fwd)
-                        </button>
-                    </div>
+                    <button type="button" class="btn btn-sm btn-blue" onclick="stlinkFullSequence()">
+                        Full Sequence: Seat Contact &rarr; Probe &rarr; Flash &rarr; Power Cycle
+                    </button>
 
-                    <div class="btn-grid-3">
-                        <button type="button" class="btn btn-primary" style="grid-column: span 2;" onclick="confirmFullProgram()">
-                            Run Full Sequence: Contact → Probe → Flash → Power Cycle
-                        </button>
-                        <button type="button" class="btn" onclick="clearStlinkLog()">
-                            Clear Log
-                        </button>
-                    </div>
-                </div>
-
-                <div>
-                    <textarea
-                        id="stlinkLog"
-                        class="stlink-log"
-                        readonly
-                        placeholder="OpenOCD &amp; fixture programming output will appear here…"
-                    ></textarea>
+                    <textarea id="stlinkLog" class="stlink-log" readonly placeholder="ST-LINK / OpenOCD output…"></textarea>
                 </div>
             </div>
         </div>
-    </section>
 
+    </section>
 </main>
 
-<!-- ==================== MODAL DIALOG ==================== -->
+<!-- Confirmation Modal -->
 <div class="modal-backdrop" id="modalBackdrop">
-    <div class="modal-card">
-        <h3 id="modalTitle">Confirm Action</h3>
+    <div class="modal-box">
+        <h3 id="modalTitle">Confirm</h3>
         <p id="modalBody"></p>
-        <div id="modalInputWrap" style="display:none; margin-bottom:16px;">
-            <input type="text" id="modalInput" placeholder="Enter motor purpose (e.g. H7 Pad-Test Fixture)">
-        </div>
         <div class="modal-actions">
-            <button type="button" class="btn" onclick="closeModal()">Cancel</button>
-            <button type="button" class="btn btn-primary" id="modalConfirmBtn">Confirm</button>
+            <button type="button" class="btn btn-sm" onclick="closeModal()">Cancel</button>
+            <button type="button" class="btn btn-sm btn-estop" id="modalConfirmBtn">Confirm</button>
         </div>
     </div>
 </div>
 
-<!-- ==================== TOAST STACK ==================== -->
-<div class="toast-stack" id="toastStack"></div>
+<div class="toast-area" id="toastArea"></div>
 
 <script>
-const MOTOR_IDS = {{ motors | map(attribute='id') | list | tojson }};
+const MOTORS_INIT = {{ motors | tojson }};
 const CLEAR_LIMIT_STEPS = {{ clear_limit_steps | tojson }};
 let projectsByMotor = {{ projects | tojson }};
-let lastKnownPos = {};
-MOTOR_IDS.forEach(id => { lastKnownPos[id] = 0; });
+let motorMeta = {};
+MOTORS_INIT.forEach(m => { motorMeta[m.id] = m; });
 
-// ==================== TOASTS & MODAL ====================
-function notify(message, kind = "info") {
-    const stack = document.getElementById("toastStack");
+const MOTOR_IDS = MOTORS_INIT.map(m => m.id);
+let activeMotor = MOTOR_IDS[0] || "motor1";
+try {
+    const saved = localStorage.getItem("selected_motor");
+    if (saved && MOTOR_IDS.includes(saved)) activeMotor = saved;
+} catch (e) {}
+
+let latestPosition = 0;
+
+// Friendly human-readable labels for raw firmware states
+const FRIENDLY_STATES = {
+    "READY": { text: "Ready", dot: "ready" },
+    "FORWARD": { text: "Moving Forward", dot: "moving" },
+    "BACKWARD": { text: "Moving Backward", dot: "moving" },
+    "FIRST HOMING": { text: "Homing…", dot: "moving" },
+    "MOVING OFFSET": { text: "Homing…", dot: "moving" },
+    "WAITING": { text: "Homing…", dot: "moving" },
+    "FINAL HOMING": { text: "Homing…", dot: "moving" },
+    "EMERGENCY STOP": { text: "Emergency Stop", dot: "danger" }
+};
+
+// ==================== NOTIFICATIONS & MODAL ====================
+function toast(msg, kind = "info") {
+    const box = document.getElementById("toastArea");
     const el = document.createElement("div");
     el.className = "toast " + kind;
-    el.textContent = message;
-    stack.appendChild(el);
-    setTimeout(() => {
-        el.style.opacity = "0";
-        el.style.transition = "opacity 0.2s ease";
-        setTimeout(() => el.remove(), 220);
-    }, 3400);
+    el.textContent = msg;
+    box.appendChild(el);
+    setTimeout(() => el.remove(), 3200);
 }
 
-let modalCallback = null;
-
-function openModal({ title, body, confirmText = "Confirm", danger = false, inputValue = null, onConfirm }) {
+let modalAction = null;
+function askConfirm(title, body, confirmLabel, fn) {
     document.getElementById("modalTitle").textContent = title;
     document.getElementById("modalBody").textContent = body;
-    const inputWrap = document.getElementById("modalInputWrap");
-    const inputEl = document.getElementById("modalInput");
-
-    if (inputValue !== null) {
-        inputWrap.style.display = "block";
-        inputEl.value = inputValue;
-        setTimeout(() => inputEl.focus(), 40);
-    } else {
-        inputWrap.style.display = "none";
-    }
-
-    const confirmBtn = document.getElementById("modalConfirmBtn");
-    confirmBtn.textContent = confirmText;
-    confirmBtn.className = danger ? "btn btn-danger-solid" : "btn btn-primary";
-    modalCallback = onConfirm;
+    document.getElementById("modalConfirmBtn").textContent = confirmLabel;
+    modalAction = fn;
     document.getElementById("modalBackdrop").classList.add("open");
 }
 
 function closeModal() {
     document.getElementById("modalBackdrop").classList.remove("open");
-    modalCallback = null;
+    modalAction = null;
 }
 
 document.getElementById("modalConfirmBtn").addEventListener("click", () => {
-    const cb = modalCallback;
-    const val = document.getElementById("modalInput").value;
+    const fn = modalAction;
     closeModal();
-    if (cb) cb(val);
+    if (fn) fn();
 });
 
-document.getElementById("modalInput").addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-        document.getElementById("modalConfirmBtn").click();
-    }
-});
-
-// ==================== API HELPER ====================
-async function apiJson(url, options = {}) {
+async function api(url, options = {}) {
     const opts = Object.assign({ headers: {} }, options);
     if (opts.body && typeof opts.body !== "string") {
         opts.headers["Content-Type"] = "application/json";
         opts.body = JSON.stringify(opts.body);
     }
-    const resp = await fetch(url, opts);
-    if (resp.status === 401) {
+    const res = await fetch(url, opts);
+    if (res.status === 401) {
         window.location.href = "/login";
-        throw new Error("Session expired");
+        throw new Error("Unauthorized");
     }
-    const data = await resp.json();
-    return { status: resp.status, data };
+    return { status: res.status, data: await res.json() };
 }
 
-function formatSteps(val) {
-    const n = Number(val);
-    if (!Number.isFinite(n)) return String(val);
-    return n.toLocaleString("en-US");
+function fmt(n) {
+    const num = Number(n);
+    return Number.isFinite(num) ? num.toLocaleString("en-US") : String(n);
 }
 
-// ==================== MOTOR PURPOSE RENAME ====================
-function openPurposeModal(motorId) {
-    const current = document.getElementById("purposeText-" + motorId).textContent.trim();
-    openModal({
-        title: "Set Desired Purpose",
-        body: "Specify the fixture or axis role for this hardcoded Arduino controller:",
-        confirmText: "Save Purpose",
-        inputValue: current,
-        onConfirm: async (newPurpose) => {
-            try {
-                const { data } = await apiJson(`/api/motor/${motorId}/purpose`, {
-                    method: "POST",
-                    body: { purpose: newPurpose }
-                });
-                if (data.ok) {
-                    document.getElementById("purposeText-" + motorId).textContent = data.purpose;
-                    notify(`Updated ${motorId.toUpperCase()} purpose to "${data.purpose}"`, "ok");
-                }
-            } catch (err) {
-                notify("Failed to update purpose", "err");
-            }
-        }
+// ==================== MOTOR SELECTION ====================
+function selectMotor(motorId) {
+    activeMotor = motorId;
+    try { localStorage.setItem("selected_motor", motorId); } catch (e) {}
+
+    MOTOR_IDS.forEach(id => {
+        const btn = document.getElementById("motorTab-" + id);
+        if (btn) btn.classList.toggle("active", id === activeMotor);
+    });
+
+    const m = motorMeta[motorId] || {};
+    document.getElementById("purposeInput").value = m.purpose || "";
+
+    renderPresetDropdown(motorId, m.active_project);
+    pollActiveMotor();
+}
+
+function renderPresetDropdown(motorId, selectedPreset = null) {
+    const sel = document.getElementById("presetSelect");
+    const list = projectsByMotor[motorId] || {};
+    const names = Object.keys(list);
+    sel.innerHTML = "";
+
+    if (names.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "No presets saved yet";
+        sel.appendChild(opt);
+        return;
+    }
+
+    names.forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        if (selectedPreset && selectedPreset === name) opt.selected = true;
+        sel.appendChild(opt);
     });
 }
 
-// ==================== CONNECTION & ACTIONS ====================
-async function reconnectMotor(motorId) {
-    notify(`Reconnecting ${motorId.toUpperCase()}…`, "info");
+function updateTabLabel(motorId, purpose) {
+    const m = motorMeta[motorId];
+    if (!m) return;
+    m.purpose = purpose;
+    const el = document.getElementById("tabLabel-" + motorId);
+    if (el) {
+        el.textContent = purpose ? `${m.name} · ${purpose}` : m.name;
+    }
+}
+
+// ==================== LIVE POLLING ====================
+async function pollActiveMotor() {
+    const motorId = activeMotor;
     try {
-        const { data } = await apiJson(`/api/motor/${motorId}/connect`, { method: "POST" });
-        if (data.connected) {
-            notify(`${data.name} online on ${data.port}`, "ok");
-        } else {
-            notify(`${data.name} offline (${data.error || "check USB cable"})`, "err");
+        const { data: s } = await api(`/api/motor/${motorId}/status`);
+        if (motorId !== activeMotor) return;
+
+        const tabDot = document.getElementById("tabDot-" + motorId);
+        const statusDot = document.getElementById("statusDot");
+        const statusLabel = document.getElementById("statusLabel");
+        const reconnectBtn = document.getElementById("reconnectBtn");
+
+        if (s.purpose !== undefined) {
+            updateTabLabel(motorId, s.purpose);
         }
-        pollMotorStatus(motorId);
-    } catch (e) {
-        notify("Reconnect request failed", "err");
-    }
+
+        document.getElementById("presetHint").textContent =
+            s.active_project ? `Preset: ${s.active_project}` : "";
+
+        if (s.error || !s.connected) {
+            if (tabDot) tabDot.className = "tab-dot offline";
+            statusDot.className = "status-dot danger";
+            statusLabel.textContent = "Disconnected";
+            reconnectBtn.classList.add("visible");
+            document.getElementById("diagPort").textContent = `Port: ${s.port || "--"} (offline)`;
+            return;
+        }
+
+        if (tabDot) tabDot.className = "tab-dot online";
+        reconnectBtn.classList.remove("visible");
+
+        const mapped = FRIENDLY_STATES[s.state] || { text: s.state || "Ready", dot: "moving" };
+        statusDot.className = "status-dot " + mapped.dot;
+        statusLabel.textContent = mapped.text;
+
+        latestPosition = Number(s.position) || 0;
+        document.getElementById("positionValue").textContent = fmt(latestPosition);
+
+        const bwd = Number(s.backward);
+        const fwd = Number(s.forward);
+        const span = fwd - bwd;
+        let pct = 50;
+        if (Number.isFinite(span) && span > 0) {
+            pct = Math.max(0, Math.min(100, ((latestPosition - bwd) / span) * 100));
+        }
+        document.getElementById("progressFill").style.width = pct.toFixed(1) + "%";
+
+        // Technician diagnostics
+        document.getElementById("diagPort").textContent = `Port: ${s.port}`;
+        document.getElementById("diagLimits").textContent = `Limits: ${fmt(bwd)} to ${fmt(fwd)}`;
+        document.getElementById("diagHomed").textContent = `Homed: ${s.homed ? "Yes" : "No"}`;
+        document.getElementById("diagSwitches").textContent =
+            `Home SW: ${s.home_switch || "--"} | E-Stop: ${s.emergency || "--"}`;
+    } catch (e) {}
 }
 
-async function reconnectAll() {
-    notify("Reconnecting both Arduino ports…", "info");
+async function pollBackgroundTabDots() {
     try {
-        await apiJson("/api/motors/connect_all", { method: "POST" });
-        pollAllMotors();
-        notify("Port scan completed", "ok");
-    } catch (e) {
-        notify("Could not reconnect ports", "err");
-    }
+        const { data: list } = await api("/api/motors");
+        list.forEach(m => {
+            motorMeta[m.id] = m;
+            const dot = document.getElementById("tabDot-" + m.id);
+            if (dot) dot.className = "tab-dot " + (m.connected ? "online" : "offline");
+            updateTabLabel(m.id, m.purpose || "");
+        });
+    } catch (e) {}
 }
 
-async function estopAll() {
+// ==================== OPERATOR CONTROLS ====================
+async function runAction(actionName, friendlyMsg) {
     try {
-        await apiJson("/api/motors/estop_all", { method: "POST" });
-        notify("Emergency stop sent to BOTH motors", "err");
-        pollAllMotors();
-    } catch (e) {
-        notify("Failed to transmit E-Stop", "err");
-    }
-}
-
-async function motorAction(motorId, actionName, okNote) {
-    try {
-        const { data } = await apiJson(`/api/motor/${motorId}/action/${actionName}`, {
+        const { data } = await api(`/api/motor/${activeMotor}/action/${actionName}`, {
             method: "POST"
         });
         if (data.ok) {
-            notify(`${motorId.toUpperCase()}: ${okNote || data.response}`, "ok");
+            toast(friendlyMsg, actionName === "estop" ? "err" : "ok");
         } else {
-            notify(`${motorId.toUpperCase()}: ${data.error || "Arduino not connected"}`, "err");
+            toast(data.error || "Motor is disconnected", "err");
         }
-        pollMotorStatus(motorId);
+        pollActiveMotor();
     } catch (e) {
-        notify(`${motorId.toUpperCase()}: Command failed`, "err");
+        toast("Command could not be sent", "err");
     }
 }
 
-function confirmClearLimits(motorId) {
-    openModal({
-        title: "Clear Travel Limits",
-        body: `Reset ${motorId.toUpperCase()} forward and backward limits to ±${formatSteps(CLEAR_LIMIT_STEPS)} steps?`,
-        confirmText: `Clear (±${formatSteps(CLEAR_LIMIT_STEPS)})`,
-        danger: true,
-        onConfirm: () => motorAction(motorId, "clear_limits", `Limits reset to ±${formatSteps(CLEAR_LIMIT_STEPS)} steps`)
-    });
+async function reconnectActiveMotor() {
+    toast("Reconnecting…", "info");
+    try {
+        const { data } = await api(`/api/motor/${activeMotor}/connect`, { method: "POST" });
+        toast(data.connected ? "Connected" : "Still disconnected — check USB cable", data.connected ? "ok" : "err");
+        pollActiveMotor();
+    } catch (e) {
+        toast("Reconnect failed", "err");
+    }
 }
 
-function confirmResetState(motorId) {
-    openModal({
-        title: "Reset Stored EEPROM State",
-        body: `Clear saved position & homed flag in ${motorId.toUpperCase()} EEPROM? The Arduino will automatically re-home on its next reboot.`,
-        confirmText: "Reset State",
-        danger: true,
-        onConfirm: () => motorAction(motorId, "reset_state", "Stored EEPROM state cleared")
-    });
+async function loadSelectedPreset() {
+    const name = document.getElementById("presetSelect").value;
+    if (!name) {
+        toast("No preset available to load", "err");
+        return;
+    }
+    try {
+        const { data } = await api(`/api/motor/${activeMotor}/projects/${encodeURIComponent(name)}/load`, {
+            method: "POST"
+        });
+        if (data.ok) {
+            if (motorMeta[activeMotor]) motorMeta[activeMotor].active_project = name;
+            toast(`Loaded preset "${name}"`, "ok");
+            pollActiveMotor();
+        } else {
+            toast(data.error || "Motor is disconnected", "err");
+        }
+    } catch (e) {
+        toast("Could not load preset", "err");
+    }
 }
 
-// ==================== HOLD-TO-JOG & HOLD-TO-CAPTURE ====================
+// ==================== ADVANCED / TECHNICIAN DRAWER ====================
+function toggleAdvanced() {
+    const btn = document.getElementById("advToggleBtn");
+    const drawer = document.getElementById("advDrawer");
+    const isOpen = drawer.classList.toggle("open");
+    btn.classList.toggle("open", isOpen);
+    if (isOpen) {
+        refreshStlinkStatus();
+    }
+}
+
+function setAdvTab(tabName) {
+    document.querySelectorAll(".subtab-btn").forEach(b => {
+        b.classList.toggle("active", b.dataset.tab === tabName);
+    });
+    document.querySelectorAll(".subpanel").forEach(p => {
+        p.classList.toggle("active", p.id === "subpanel-" + tabName);
+    });
+    if (tabName === "stlink") {
+        refreshStlinkStatus();
+    }
+}
+
+function useCurrentStep(which) {
+    const id = which === "forward" ? "newPresetForward" : "newPresetBackward";
+    document.getElementById(id).value = latestPosition;
+}
+
+async function saveNewPreset() {
+    const name = document.getElementById("newPresetName").value.trim();
+    const backward = document.getElementById("newPresetBackward").value.trim();
+    const forward = document.getElementById("newPresetForward").value.trim();
+
+    if (!name) {
+        toast("Enter a preset name", "err");
+        return;
+    }
+
+    try {
+        const { data } = await api(`/api/motor/${activeMotor}/projects`, {
+            method: "POST",
+            body: { name, backward, forward }
+        });
+        if (!data.ok) {
+            toast(data.error || "Could not save preset", "err");
+            return;
+        }
+        projectsByMotor[activeMotor] = data.projects;
+        renderPresetDropdown(activeMotor, name);
+        document.getElementById("newPresetName").value = "";
+        toast(`Saved preset "${name}"`, "ok");
+    } catch (e) {
+        toast("Failed to save preset", "err");
+    }
+}
+
+function deleteSelectedPreset() {
+    const name = document.getElementById("presetSelect").value;
+    if (!name) {
+        toast("No preset selected", "err");
+        return;
+    }
+    askConfirm(
+        "Delete Preset",
+        `Delete preset "${name}" from this motor?`,
+        "Delete",
+        async () => {
+            const { data } = await api(`/api/motor/${activeMotor}/projects/${encodeURIComponent(name)}`, {
+                method: "DELETE"
+            });
+            if (data.ok) {
+                projectsByMotor[activeMotor] = data.projects;
+                renderPresetDropdown(activeMotor);
+                toast(`Deleted "${name}"`, "ok");
+            }
+        }
+    );
+}
+
+async function saveMotorPurpose() {
+    const purpose = document.getElementById("purposeInput").value.trim();
+    try {
+        const { data } = await api(`/api/motor/${activeMotor}/purpose`, {
+            method: "POST",
+            body: { purpose }
+        });
+        if (data.ok) {
+            updateTabLabel(activeMotor, data.purpose);
+            toast("Updated motor label", "ok");
+        }
+    } catch (e) {
+        toast("Could not update label", "err");
+    }
+}
+
+function confirmClearLimits() {
+    askConfirm(
+        "Clear Travel Limits",
+        `Reset forward and backward limits on this motor to ±${fmt(CLEAR_LIMIT_STEPS)} steps?`,
+        "Clear Limits",
+        () => runAction("clear_limits", `Limits reset to ±${fmt(CLEAR_LIMIT_STEPS)}`)
+    );
+}
+
+function confirmResetState() {
+    askConfirm(
+        "Reset Stored Position",
+        "Clear the saved position in Arduino EEPROM so the motor homes again on next reboot?",
+        "Reset",
+        () => runAction("reset_state", "Stored EEPROM state cleared")
+    );
+}
+
+// Hold-to-jog buttons inside Technician tools
 function bindHoldButtons() {
-    document.querySelectorAll(".hold-jog-btn").forEach(btn => {
+    document.querySelectorAll(".hold-jog").forEach(btn => {
         let active = false;
-        const motorId = btn.dataset.motor;
-        const dir = btn.dataset.dir;
-        const startAction = dir === "forward" ? "move_forward" : "move_backward";
+        const startAct = btn.dataset.dir === "forward" ? "move_forward" : "move_backward";
 
-        const start = (ev) => {
-            ev.preventDefault();
+        const start = (e) => {
+            e.preventDefault();
             if (active) return;
             active = true;
             btn.classList.add("holding");
-            apiJson(`/api/motor/${motorId}/action/${startAction}`, { method: "POST" }).catch(() => {});
+            api(`/api/motor/${activeMotor}/action/${startAct}`, { method: "POST" }).catch(() => {});
         };
 
         const stop = () => {
             if (!active) return;
             active = false;
             btn.classList.remove("holding");
-            apiJson(`/api/motor/${motorId}/action/stop`, { method: "POST" })
-                .then(() => pollMotorStatus(motorId))
+            api(`/api/motor/${activeMotor}/action/stop`, { method: "POST" })
+                .then(() => pollActiveMotor())
                 .catch(() => {});
         };
 
@@ -1582,539 +1346,121 @@ function bindHoldButtons() {
         btn.addEventListener("pointerleave", stop);
         btn.addEventListener("pointercancel", stop);
     });
-
-    document.querySelectorAll(".hold-capture-btn").forEach(btn => {
-        let active = false;
-        const motorId = btn.dataset.motor;
-        const dir = btn.dataset.dir;
-        const target = btn.dataset.target;
-        const startAction = dir === "forward" ? "move_forward" : "move_backward";
-
-        const start = (ev) => {
-            ev.preventDefault();
-            if (active) return;
-            active = true;
-            btn.classList.add("holding");
-            apiJson(`/api/motor/${motorId}/action/${startAction}`, { method: "POST" }).catch(() => {});
-        };
-
-        const stop = async () => {
-            if (!active) return;
-            active = false;
-            btn.classList.remove("holding");
-            try {
-                await apiJson(`/api/motor/${motorId}/action/stop`, { method: "POST" });
-                const { data } = await apiJson(`/api/motor/${motorId}/position`);
-                if (data.position !== null && data.position !== undefined) {
-                    const inputId = (target === "forward" ? "newForward-" : "newBackward-") + motorId;
-                    document.getElementById(inputId).value = data.position;
-                    lastKnownPos[motorId] = data.position;
-                }
-                pollMotorStatus(motorId);
-            } catch (e) {}
-        };
-
-        btn.addEventListener("pointerdown", start);
-        btn.addEventListener("pointerup", stop);
-        btn.addEventListener("pointerleave", stop);
-        btn.addEventListener("pointercancel", stop);
-    });
 }
 
-// ==================== PER-MOTOR PRESETS ====================
-function togglePresetDrawer(motorId) {
-    const drawer = document.getElementById("presetDrawer-" + motorId);
-    drawer.classList.toggle("open");
-}
-
-function fillCurrentPos(motorId, which) {
-    const inputId = (which === "forward" ? "newForward-" : "newBackward-") + motorId;
-    document.getElementById(inputId).value = lastKnownPos[motorId] ?? 0;
-}
-
-function renderProjectOptions(motorId, projects, activeProject = null) {
-    projectsByMotor[motorId] = projects;
-    const sel = document.getElementById("projectSelect-" + motorId);
-    const names = Object.keys(projects);
-    sel.innerHTML = "";
-
-    if (names.length === 0) {
-        const opt = document.createElement("option");
-        opt.value = "";
-        opt.textContent = `(No saved presets for ${motorId.toUpperCase()})`;
-        sel.appendChild(opt);
-        return;
-    }
-
-    names.forEach(name => {
-        const p = projects[name];
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = `${name}  [BWD: ${p.backward} → FWD: ${p.forward}]`;
-        if (activeProject && activeProject === name) {
-            opt.selected = true;
-        }
-        sel.appendChild(opt);
-    });
-}
-
-async function saveProject(motorId) {
-    const name = document.getElementById("newName-" + motorId).value.trim();
-    const forward = document.getElementById("newForward-" + motorId).value.trim();
-    const backward = document.getElementById("newBackward-" + motorId).value.trim();
-
-    if (!name) {
-        notify("Please enter a preset name", "err");
-        return;
-    }
-
-    try {
-        const { data } = await apiJson(`/api/motor/${motorId}/projects`, {
-            method: "POST",
-            body: { name, forward, backward }
-        });
-        if (!data.ok) {
-            notify(data.error || "Could not save preset", "err");
-            return;
-        }
-        renderProjectOptions(motorId, data.projects, name);
-        document.getElementById("newName-" + motorId).value = "";
-        document.getElementById("presetDrawer-" + motorId).classList.remove("open");
-        notify(`Saved preset "${name}" for ${motorId.toUpperCase()}`, "ok");
-    } catch (e) {
-        notify("Failed to save preset", "err");
-    }
-}
-
-async function loadProject(motorId) {
-    const sel = document.getElementById("projectSelect-" + motorId);
-    const name = sel.value;
-    if (!name) {
-        notify("Select a preset to load first", "err");
-        return;
-    }
-
-    try {
-        const { data } = await apiJson(`/api/motor/${motorId}/projects/${encodeURIComponent(name)}/load`, {
-            method: "POST"
-        });
-        if (data.ok) {
-            document.getElementById("activePreset-" + motorId).textContent = name;
-            notify(`Loaded preset "${name}" onto ${motorId.toUpperCase()}`, "ok");
-            pollMotorStatus(motorId);
-        } else {
-            notify(`${motorId.toUpperCase()}: ${data.error || "Arduino offline"}`, "err");
-        }
-    } catch (e) {
-        notify("Failed to load preset", "err");
-    }
-}
-
-function confirmDeleteProject(motorId) {
-    const sel = document.getElementById("projectSelect-" + motorId);
-    const name = sel.value;
-    if (!name) {
-        notify("No preset selected", "err");
-        return;
-    }
-
-    openModal({
-        title: "Delete Preset",
-        body: `Delete preset "${name}" from ${motorId.toUpperCase()}?`,
-        confirmText: "Delete Preset",
-        danger: true,
-        onConfirm: async () => {
-            try {
-                const { data } = await apiJson(`/api/motor/${motorId}/projects/${encodeURIComponent(name)}`, {
-                    method: "DELETE"
-                });
-                if (data.ok) {
-                    renderProjectOptions(motorId, data.projects);
-                    notify(`Deleted preset "${name}"`, "ok");
-                } else {
-                    notify(data.error || "Delete failed", "err");
-                }
-            } catch (e) {
-                notify("Failed to delete preset", "err");
-            }
-        }
-    });
-}
-
-// ==================== LIVE TELEMETRY POLLING ====================
-function updateSwitchChip(chipId, valId, val, dangerWhenOn = false) {
-    const chip = document.getElementById(chipId);
-    const strong = document.getElementById(valId);
-    const text = val || "--";
-    strong.textContent = text;
-    chip.classList.remove("active", "danger");
-    if (text === "ON") {
-        chip.classList.add(dangerWhenOn ? "danger" : "active");
-    }
-}
-
-function updateTravelGauge(motorId, pos, bwd, fwd) {
-    const span = fwd - bwd;
-    const thumb = document.getElementById("travelThumb-" + motorId);
-    const fill = document.getElementById("travelFill-" + motorId);
-    const originTick = document.getElementById("originTick-" + motorId);
-
-    if (!Number.isFinite(span) || span <= 0) {
-        thumb.style.left = "50%";
-        fill.style.left = "50%";
-        fill.style.width = "0%";
-        originTick.style.left = "50%";
-        return;
-    }
-
-    const clampPct = (v) => Math.max(0, Math.min(100, v));
-    const posPct = clampPct(((pos - bwd) / span) * 100);
-    const originPct = clampPct(((0 - bwd) / span) * 100);
-
-    thumb.style.left = posPct.toFixed(1) + "%";
-    originTick.style.left = originPct.toFixed(1) + "%";
-
-    const leftPct = Math.min(posPct, originPct);
-    const widthPct = Math.abs(posPct - originPct);
-    fill.style.left = leftPct.toFixed(1) + "%";
-    fill.style.width = widthPct.toFixed(1) + "%";
-}
-
-function applyMotorOnlineState(motorId, connected, stateLabel, errorMessage) {
-    const topDot = document.getElementById("topDot-" + motorId);
-    const topState = document.getElementById("topState-" + motorId);
-    const badge = document.getElementById("stateBadge-" + motorId);
-    const stateDot = document.getElementById("stateDot-" + motorId);
-    const stateText = document.getElementById("stateText-" + motorId);
-    const banner = document.getElementById("offlineBanner-" + motorId);
-    const bannerMsg = document.getElementById("offlineMsg-" + motorId);
-
-    badge.className = "state-badge";
-    stateDot.className = "dot";
-    topDot.className = "dot";
-
-    if (!connected) {
-        topDot.classList.add("offline");
-        topState.textContent = "OFFLINE";
-        badge.classList.add("offline");
-        stateDot.classList.add("offline");
-        stateText.textContent = "OFFLINE";
-        banner.classList.add("visible");
-        if (errorMessage) {
-            bannerMsg.textContent = errorMessage;
-        }
-        return;
-    }
-
-    banner.classList.remove("visible");
-    topDot.classList.add("online");
-    topState.textContent = stateLabel || "ONLINE";
-    stateText.textContent = stateLabel || "READY";
-
-    if (stateLabel === "READY") {
-        badge.classList.add("ready");
-        stateDot.classList.add("online");
-    } else if (stateLabel && stateLabel.includes("EMERGENCY")) {
-        badge.classList.add("estop");
-        stateDot.classList.add("offline");
-    } else {
-        badge.classList.add("moving");
-        stateDot.classList.add("busy");
-    }
-}
-
-async function pollMotorStatus(motorId) {
-    try {
-        const { data: s } = await apiJson(`/api/motor/${motorId}/status`);
-
-        if (s.purpose) {
-            document.getElementById("purposeText-" + motorId).textContent = s.purpose;
-        }
-        document.getElementById("activePreset-" + motorId).textContent =
-            s.active_project || "Manual / Default";
-
-        if (s.error || !s.connected) {
-            applyMotorOnlineState(
-                motorId,
-                false,
-                "OFFLINE",
-                `Arduino offline on ${s.port || ""}${s.message ? " — " + s.message : ""}`
-            );
-            return;
-        }
-
-        applyMotorOnlineState(motorId, true, s.state, null);
-
-        lastKnownPos[motorId] = Number(s.position) || 0;
-        document.getElementById("pos-" + motorId).textContent = formatSteps(s.position);
-
-        const homedEl = document.getElementById("homedBadge-" + motorId);
-        if (s.homed) {
-            homedEl.textContent = "HOMED";
-            homedEl.className = "pill-tag ok";
-        } else {
-            homedEl.textContent = "UNHOMED";
-            homedEl.className = "pill-tag warn";
-        }
-
-        const bwd = Number(s.backward);
-        const fwd = Number(s.forward);
-        document.getElementById("bwdLim-" + motorId).textContent = formatSteps(bwd);
-        document.getElementById("fwdLim-" + motorId).textContent =
-            (fwd > 0 ? "+" : "") + formatSteps(fwd);
-
-        updateTravelGauge(motorId, lastKnownPos[motorId], bwd, fwd);
-
-        updateSwitchChip("ioHome-" + motorId, "ioHomeVal-" + motorId, s.home_switch, false);
-        updateSwitchChip("ioBwd-" + motorId, "ioBwdVal-" + motorId, s.backward_switch, false);
-        updateSwitchChip("ioFwd-" + motorId, "ioFwdVal-" + motorId, s.forward_switch, false);
-        updateSwitchChip("ioEstop-" + motorId, "ioEstopVal-" + motorId, s.emergency, true);
-    } catch (e) {
-        // Keep UI responsive on transient network hiccups
-    }
-}
-
-function pollAllMotors() {
-    MOTOR_IDS.forEach(pollMotorStatus);
-}
-
-// ==================== ST-LINK / H7 PROGRAMMING ====================
-function stlinkAppendLog(text) {
+// ==================== ST-LINK TOOLS ====================
+function logStlink(line) {
     const el = document.getElementById("stlinkLog");
-    const stamp = new Date().toLocaleTimeString();
-    el.value = (el.value ? el.value + "\n" : "") + `[${stamp}] ${text}`;
+    el.value = (el.value ? el.value + "\n" : "") + line;
     el.scrollTop = el.scrollHeight;
-}
-
-function clearStlinkLog() {
-    document.getElementById("stlinkLog").value = "";
-}
-
-function setStlinkSwdBadge(mode, label) {
-    const badge = document.getElementById("stlinkSwdBadge");
-    const dot = document.getElementById("stlinkSwdDot");
-    const text = document.getElementById("stlinkSwdText");
-    text.textContent = label;
-    badge.className = "state-badge";
-    dot.className = "dot";
-
-    if (mode === "ok") {
-        badge.classList.add("ready");
-        dot.classList.add("online");
-    } else if (mode === "busy") {
-        badge.classList.add("moving");
-        dot.classList.add("busy");
-    } else if (mode === "err") {
-        badge.classList.add("estop");
-        dot.classList.add("offline");
-    }
 }
 
 async function refreshStlinkStatus() {
     try {
-        const { data: s } = await apiJson("/api/stlink/status");
-        const usbBadge = document.getElementById("stlinkUsbBadge");
-        const usbDot = document.getElementById("stlinkUsbDot");
-        const usbText = document.getElementById("stlinkUsbText");
-
-        usbBadge.className = "state-badge " + (s.adapter_present ? "ready" : "offline");
-        usbDot.className = "dot " + (s.adapter_present ? "online" : "offline");
-        usbText.textContent = s.adapter_present ? "PRESENT" : "MISSING";
+        const { data: s } = await api("/api/stlink/status");
+        document.getElementById("stlinkUsbPill").textContent =
+            "ST-LINK USB: " + (s.adapter_present ? "Present" : "Missing");
 
         const sel = document.getElementById("stlinkImage");
         const prev = sel.value;
         sel.innerHTML = "";
-
-        if (!s.images || s.images.length === 0) {
+        if (!s.images || !s.images.length) {
             const opt = document.createElement("option");
             opt.value = "";
-            opt.textContent = "(No .hex / .bin images found in firmware/indi_h743/)";
+            opt.textContent = "No firmware images found";
             sel.appendChild(opt);
         } else {
             s.images.forEach(img => {
                 const opt = document.createElement("option");
                 opt.value = img.name;
-                opt.textContent = `${img.name} (${img.role}, ${img.size.toLocaleString()} B)`;
+                opt.textContent = `${img.name} (${img.role})`;
                 sel.appendChild(opt);
             });
-            if (prev && Array.from(sel.options).some(o => o.value === prev)) {
-                sel.value = prev;
-            }
+            if (prev) sel.value = prev;
         }
     } catch (e) {}
 }
 
 async function stlinkContact() {
-    const motor = document.getElementById("stlinkMotor").value;
-    setStlinkSwdBadge("busy", "SEATING…");
-    stlinkAppendLog(`Seating pogo contact via ${motor.toUpperCase()}…`);
-
-    try {
-        const { data } = await apiJson("/api/stlink/contact", {
-            method: "POST",
-            body: { motor, load_h7: true }
-        });
-        stlinkAppendLog(JSON.stringify(data));
-        if (data.ok) {
-            setStlinkSwdBadge("ok", "CONTACT READY");
-            notify("Fixture seated at forward contact", "ok");
-        } else {
-            setStlinkSwdBadge("err", (data.state || "CONTACT FAIL").toUpperCase());
-            notify(data.error || "Contact seating failed", "err");
-        }
-        pollMotorStatus(motor);
-        return data;
-    } catch (e) {
-        setStlinkSwdBadge("err", "ERROR");
-        return null;
-    }
+    document.getElementById("stlinkSwdPill").textContent = "SWD: Seating…";
+    logStlink(`--- Seating contact on ${activeMotor} ---`);
+    const { data } = await api("/api/stlink/contact", {
+        method: "POST",
+        body: { motor: activeMotor, load_h7: true }
+    });
+    logStlink(JSON.stringify(data));
+    document.getElementById("stlinkSwdPill").textContent =
+        "SWD: " + (data.ok ? "Contact Ready" : "Contact Failed");
+    pollActiveMotor();
+    return data;
 }
 
 async function stlinkProbe() {
-    setStlinkSwdBadge("busy", "PROBING…");
-    stlinkAppendLog("Probing STM32H743 over SWD…");
-
-    try {
-        const { data } = await apiJson("/api/stlink/probe", { method: "POST", body: {} });
-        document.getElementById("stlinkVoltage").textContent =
-            data.voltage != null ? `${data.voltage} V` : "--";
-        stlinkAppendLog(data.log || JSON.stringify(data));
-
-        if (data.ok) {
-            setStlinkSwdBadge("ok", "SWD CONNECTED");
-            notify("SWD target connected", "ok");
-        } else {
-            setStlinkSwdBadge("err", (data.state || "SWD FAIL").toUpperCase());
-            notify(`SWD probe failed (${data.state || "error"})`, "err");
-        }
-        refreshStlinkStatus();
-        return data;
-    } catch (e) {
-        setStlinkSwdBadge("err", "ERROR");
-        return null;
-    }
+    document.getElementById("stlinkSwdPill").textContent = "SWD: Probing…";
+    const { data } = await api("/api/stlink/probe", { method: "POST", body: {} });
+    document.getElementById("stlinkVoltPill").textContent =
+        "VTarget: " + (data.voltage != null ? `${data.voltage} V` : "--");
+    document.getElementById("stlinkSwdPill").textContent =
+        "SWD: " + (data.ok ? "Connected" : (data.state || "Failed"));
+    logStlink(data.log || JSON.stringify(data));
+    return data;
 }
 
 async function stlinkFlash() {
     const image = document.getElementById("stlinkImage").value;
     const base = document.getElementById("stlinkBase").value;
-
     if (!image) {
-        notify("No firmware image available in firmware/indi_h743/", "err");
+        toast("Select a firmware image first", "err");
         return null;
     }
-
-    setStlinkSwdBadge("busy", "FLASHING…");
-    stlinkAppendLog(`Flashing ${image}${base ? " @ " + base : ""}…`);
-
+    document.getElementById("stlinkSwdPill").textContent = "SWD: Flashing…";
     const payload = { image };
     if (base) payload.base = base;
-
-    try {
-        const { data } = await apiJson("/api/stlink/flash", { method: "POST", body: payload });
-        stlinkAppendLog(data.log || JSON.stringify(data));
-
-        if (data.ok || data.verified) {
-            setStlinkSwdBadge("ok", "VERIFIED OK");
-            notify(`Flashed & verified ${image}`, "ok");
-        } else {
-            setStlinkSwdBadge("err", (data.state || "FLASH FAIL").toUpperCase());
-            notify("Flash / verify failed — check log", "err");
-        }
-        return data;
-    } catch (e) {
-        setStlinkSwdBadge("err", "ERROR");
-        return null;
-    }
+    const { data } = await api("/api/stlink/flash", { method: "POST", body: payload });
+    logStlink(data.log || JSON.stringify(data));
+    document.getElementById("stlinkSwdPill").textContent =
+        "SWD: " + ((data.ok || data.verified) ? "Verified OK" : "Flash Failed");
+    toast((data.ok || data.verified) ? "Flash verified" : "Flash failed", (data.ok || data.verified) ? "ok" : "err");
+    return data;
 }
 
 async function stlinkSoftRun() {
-    setStlinkSwdBadge("busy", "SOFT RUN…");
-    stlinkAppendLog("Triggering soft SYSRESETREQ run…");
-
-    try {
-        const { data } = await apiJson("/api/stlink/run", { method: "POST", body: {} });
-        stlinkAppendLog(data.log || JSON.stringify(data));
-        if (data.ok) {
-            setStlinkSwdBadge("ok", "RUNNING");
-            notify("Target soft-started", "ok");
-        } else {
-            setStlinkSwdBadge("err", (data.state || "RUN FAIL").toUpperCase());
-            notify("Soft run failed", "err");
-        }
-        return data;
-    } catch (e) {
-        setStlinkSwdBadge("err", "ERROR");
-        return null;
-    }
+    const { data } = await api("/api/stlink/run", { method: "POST", body: {} });
+    logStlink(data.log || JSON.stringify(data));
+    toast(data.ok ? "Target running" : "Soft run failed", data.ok ? "ok" : "err");
+    return data;
 }
 
 async function stlinkPowerCycle() {
-    const motor = document.getElementById("stlinkMotor").value;
-    setStlinkSwdBadge("busy", "POWER CYCLING…");
-    stlinkAppendLog(`Mechanical power cycle via ${motor.toUpperCase()} (Backward → Forward)…`);
-
-    try {
-        const { data } = await apiJson("/api/stlink/power_cycle", {
-            method: "POST",
-            body: { motor }
-        });
-        stlinkAppendLog(JSON.stringify(data));
-        if (data.ok) {
-            setStlinkSwdBadge("ok", "POWER CYCLED");
-            notify("Fixture power cycle complete", "ok");
-        } else {
-            setStlinkSwdBadge("err", (data.state || "CYCLE FAIL").toUpperCase());
-            notify("Power cycle incomplete", "err");
-        }
-        pollMotorStatus(motor);
-        return data;
-    } catch (e) {
-        setStlinkSwdBadge("err", "ERROR");
-        return null;
-    }
-}
-
-function confirmFullProgram() {
-    openModal({
-        title: "Run Full Programming Sequence",
-        body: "Execute Seat Contact → Probe SWD → Flash & Verify → Mechanical Power Cycle?",
-        confirmText: "Start Sequence",
-        onConfirm: runFullProgram
+    document.getElementById("stlinkSwdPill").textContent = "SWD: Power Cycling…";
+    const { data } = await api("/api/stlink/power_cycle", {
+        method: "POST",
+        body: { motor: activeMotor }
     });
+    logStlink(JSON.stringify(data));
+    document.getElementById("stlinkSwdPill").textContent =
+        "SWD: " + (data.ok ? "Power Cycled" : "Cycle Failed");
+    pollActiveMotor();
+    return data;
 }
 
-async function runFullProgram() {
-    stlinkAppendLog("=== FULL PROGRAMMING SEQUENCE START ===");
+async function stlinkFullSequence() {
     const c = await stlinkContact();
-    if (!c || !c.ok) {
-        stlinkAppendLog("ABORTED: Fixture contact not ready.");
-        return;
-    }
-
+    if (!c || !c.ok) return;
     const p = await stlinkProbe();
-    if (!p || !p.ok) {
-        stlinkAppendLog("ABORTED: SWD probe failed.");
-        return;
-    }
-
+    if (!p || !p.ok) return;
     const f = await stlinkFlash();
-    if (!f || !(f.ok || f.verified)) {
-        stlinkAppendLog("ABORTED: Flash verification failed.");
-        return;
-    }
-
+    if (!f || !(f.ok || f.verified)) return;
     await stlinkPowerCycle();
-    stlinkAppendLog("=== FULL PROGRAMMING SEQUENCE COMPLETE ===");
 }
 
-// ==================== BOOTSTRAP ====================
+// ==================== INIT ====================
 bindHoldButtons();
-pollAllMotors();
-refreshStlinkStatus();
+selectMotor(activeMotor);
+pollBackgroundTabDots();
 
-setInterval(pollAllMotors, 1000);
-setInterval(refreshStlinkStatus, 5000);
+setInterval(pollActiveMotor, 1000);
+setInterval(pollBackgroundTabDots, 4000);
 </script>
 </body>
 </html>

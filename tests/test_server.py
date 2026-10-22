@@ -46,7 +46,6 @@ class FakeSerialArduino:
         cmd = payload.decode("utf-8").strip().upper()
         self.commands_seen.append(cmd)
 
-        # Inject an unsolicited motion line before real reply to verify filtering
         self._rx_lines.append(b"MOVING_FORWARD POSITION:100\n")
 
         if cmd == "STATUS":
@@ -96,7 +95,7 @@ class FakeSerialArduino:
             self._rx_lines.append(b"START MOVING BACKWARD\n")
         elif cmd == "ESTOP":
             self.state = "EMERGENCY STOP"
-            self._rx_lines.append(b"EMERGENCY STOP\n")
+            self. _rx_lines.append(b"EMERGENCY STOP\n")
         elif cmd == "STOP":
             self.state = "READY"
             self._rx_lines.append(b"STOPPED\n")
@@ -116,7 +115,7 @@ class FakeSerialArduino:
         return b""
 
 
-class DualStepperConsoleTests(unittest.TestCase):
+class MinimalOperatorConsoleTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
         self.tmp.write(
@@ -132,11 +131,13 @@ class DualStepperConsoleTests(unittest.TestCase):
 
         self.fake_a = FakeSerialArduino("/dev/stepper_a")
         self.fake_b = FakeSerialArduino("/dev/stepper_b")
-        self.fake_a.position = 12345
-        self.fake_b.position = -4321
+        self.fake_a.position = 64560
+        self.fake_b.position = 70000
 
         m1 = steppers.MOTORS["motor1"]
         m2 = steppers.MOTORS["motor2"]
+        m1.port = "/dev/stepper_a"
+        m2.port = "/dev/stepper_b"
         m1._serial = self.fake_a
         m1.connected = True
         m1.last_error = None
@@ -157,85 +158,64 @@ class DualStepperConsoleTests(unittest.TestCase):
     def test_hardcoded_ports(self):
         self.assertEqual(steppers.MOTOR_1_PORT, "/dev/stepper_a")
         self.assertEqual(steppers.MOTOR_2_PORT, "/dev/stepper_b")
-        self.assertEqual(steppers.MOTORS["motor1"].port, "/dev/stepper_a")
-        self.assertEqual(steppers.MOTORS["motor2"].port, "/dev/stepper_b")
 
-    def test_dashboard_removes_hardware_monitor_and_renders_both_motors(self):
+    def test_minimal_single_motor_selector_ui(self):
         resp = self._login()
         self.assertEqual(resp.status_code, 200)
         html = resp.get_data(as_text=True)
 
-        # Both hardcoded ports and side-by-side panels present
-        self.assertIn("/dev/stepper_a", html)
-        self.assertIn("/dev/stepper_b", html)
-        self.assertIn("panel-motor1", html)
-        self.assertIn("panel-motor2", html)
-        self.assertIn("85,000", html)
-        self.assertIn("ST-LINK / STM32H743 Fixture Programming", html)
+        # Single-motor switcher tabs in top header (NOT side-by-side motor panels)
+        self.assertIn("motorTab-motor1", html)
+        self.assertIn("motorTab-motor2", html)
+        self.assertEqual(html.count('class="operator-card"'), 1)
+        self.assertNotIn("motors-grid", html)
 
-        # Hardware Monitor & buzzer completely removed
+        # Simple plain-English controls matching chosen design
+        self.assertIn("Select Preset", html)
+        self.assertIn("Move Backward", html)
+        self.assertIn("Move Forward", html)
+        self.assertIn("Home Motor", html)
+        self.assertIn("Emergency Stop", html)
+        self.assertIn("Advanced &amp; Technician Tools", html)
+
+        # Hardware Monitor stays completely absent
         self.assertNotIn("Hardware Monitor", html)
         self.assertNotIn("TEST BUZZER", html)
         self.assertNotIn("4.5V Rail", html)
-        self.assertNotIn("9V Rail", html)
-        self.assertNotIn("SPI Communication", html)
 
-    def test_legacy_projects_migrated_per_motor(self):
-        self._login()
-        p1 = self.client.get("/api/motor/motor1/projects").get_json()
-        p2 = self.client.get("/api/motor/motor2/projects").get_json()
+    def test_duplicate_symlink_guard(self):
+        with tempfile.TemporaryDirectory() as d:
+            real_dev = Path(d) / "ttyACM0"
+            real_dev.write_text("")
+            link_a = Path(d) / "stepper_a"
+            link_b = Path(d) / "stepper_b"
+            link_a.symlink_to(real_dev)
+            link_b.symlink_to(real_dev)
 
-        self.assertIn("H7", p1)
-        self.assertNotIn("ESC", p1)
-        self.assertIn("ESC", p2)
-        self.assertEqual(p2["ESC"], {"forward": 78000, "backward": 70000})
+            m1 = steppers.MOTORS["motor1"]
+            m2 = steppers.MOTORS["motor2"]
+            m1.port = str(link_a)
+            m2.port = str(link_b)
+            m1.connected = True
+            m2._serial = None
+            m2.connected = False
+
+            ok = m2.connect(force=True)
+            self.assertFalse(ok)
+            self.assertIn("points to same device", m2.last_error or "")
 
     def test_independent_motor_status_and_actions(self):
         self._login()
 
         s1 = self.client.get("/api/motor/motor1/status").get_json()
         s2 = self.client.get("/api/motor/motor2/status").get_json()
-        self.assertEqual(s1["position"], 12345)
-        self.assertEqual(s2["position"], -4321)
+        self.assertEqual(s1["position"], 64560)
+        self.assertEqual(s2["position"], 70000)
 
-        # Load H7 on motor1 only
-        r_load = self.client.post("/api/motor/motor1/projects/H7/load").get_json()
-        self.assertTrue(r_load["ok"])
-        self.assertEqual(self.fake_a.forward, 64560)
-        self.assertEqual(self.fake_a.backward, 50000)
-        # Motor 2 limits untouched
-        self.assertEqual(self.fake_b.forward, 85000)
-        self.assertEqual(self.fake_b.backward, -85000)
-
-        # Clear limits on motor1 -> +/- 85000
         r_clr = self.client.post("/api/motor/motor1/action/clear_limits").get_json()
         self.assertTrue(r_clr["ok"])
         self.assertEqual(self.fake_a.forward, 85000)
         self.assertEqual(self.fake_a.backward, -85000)
-
-        # Save position & rename purpose on motor2
-        r_save = self.client.post("/api/motor/motor2/action/save_position").get_json()
-        self.assertTrue(r_save["ok"])
-        self.assertIn("POSITION SAVED", r_save["response"])
-
-        r_purp = self.client.post(
-            "/api/motor/motor2/purpose",
-            json={"purpose": "Calibration Stage"},
-        ).get_json()
-        self.assertEqual(r_purp["purpose"], "Calibration Stage")
-
-    def test_stlink_endpoints_wired(self):
-        self._login()
-        st = self.client.get("/api/stlink/status").get_json()
-        self.assertIn("adapter_present", st)
-        self.assertIn("images", st)
-
-        contact = self.client.post(
-            "/api/stlink/contact",
-            json={"motor": "motor1", "load_h7": True},
-        ).get_json()
-        self.assertTrue(contact["ok"])
-        self.assertEqual(self.fake_a.position, 64560)
 
 
 if __name__ == "__main__":

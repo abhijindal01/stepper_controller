@@ -8,8 +8,8 @@ hardcoded, udev-pinned serial device paths:
     MOTOR 2  ->  /dev/stepper_b
 
 See udev/99-stepper-controllers.rules and tools/setup_udev.sh for how each
-physical Arduino USB port or board serial number is bound to /dev/stepper_a
-and /dev/stepper_b so they never swap across reboots.
+physical Arduino USB port is bound to /dev/stepper_a and /dev/stepper_b
+so they never swap across reboots.
 """
 
 from __future__ import annotations
@@ -36,7 +36,6 @@ BOOT_SETTLE_SECONDS = 2.0
 RECONNECT_COOLDOWN_SECONDS = 3.0
 
 
-# Unsolicited progress lines emitted by firmware during motion/homing
 _ASYNC_PREFIXES = (
     "MOVING_FORWARD POSITION:",
     "MOVING_BACKWARD POSITION:",
@@ -93,6 +92,18 @@ class StepperMotor:
         with self._lock:
             return self._connect_locked(force=force)
 
+    def _find_duplicate_port_owner(self) -> str | None:
+        """Guard against misconfigured udev symlinks pointing two motors at one tty."""
+        if not os.path.exists(self.port):
+            return None
+        my_real = os.path.realpath(self.port)
+        for other_id, other in MOTORS.items():
+            if other_id == self.id or not other.connected:
+                continue
+            if os.path.exists(other.port) and os.path.realpath(other.port) == my_real:
+                return f"{other.name} ({my_real})"
+        return None
+
     def _connect_locked(self, force: bool = False) -> bool:
         if self._serial is not None and getattr(self._serial, "is_open", False):
             self.connected = True
@@ -104,6 +115,12 @@ class StepperMotor:
 
         self._last_connect_attempt = now
         self._close_locked()
+
+        dup_owner = self._find_duplicate_port_owner()
+        if dup_owner is not None:
+            self.connected = False
+            self.last_error = f"{self.port} points to same device as {dup_owner} — re-run setup_udev.sh"
+            return False
 
         try:
             ser = serial.Serial(
@@ -149,23 +166,6 @@ class StepperMotor:
         except Exception:
             pass
 
-    def _read_lines_locked(self, max_lines: int = 8) -> list[str]:
-        if self._serial is None:
-            return []
-        lines: list[str] = []
-        for _ in range(max_lines):
-            raw = self._serial.readline()
-            if not raw:
-                break
-            decoded = raw.decode("utf-8", errors="replace").strip()
-            if decoded:
-                lines.append(decoded)
-            # Stop immediately once we have at least one meaningful line and buffer is empty
-            in_waiting = getattr(self._serial, "in_waiting", 0)
-            if lines and not in_waiting:
-                break
-        return lines
-
     def send(self, command: str) -> str | None:
         """Send one command line to the Arduino and return its reply line."""
         clean = command.strip()
@@ -181,7 +181,6 @@ class StepperMotor:
                 self._serial.write((clean + "\n").encode("utf-8"))
                 self._serial.flush()
 
-                # Read lines, skipping async motion/homing progress notifications
                 for _ in range(10):
                     raw = self._serial.readline()
                     if not raw:
@@ -264,14 +263,14 @@ MOTORS: dict[str, StepperMotor] = {
         motor_id="motor1",
         name="Motor 1",
         port=os.environ.get("MOTOR1_PORT", MOTOR_1_PORT),
-        default_purpose="H7 Pad-Test Fixture",
+        default_purpose="H7 Fixture",
         boot_settle=float(os.environ.get("ARDUINO_BOOT_SETTLE", str(BOOT_SETTLE_SECONDS))),
     ),
     "motor2": StepperMotor(
         motor_id="motor2",
         name="Motor 2",
         port=os.environ.get("MOTOR2_PORT", MOTOR_2_PORT),
-        default_purpose="ESC Test Fixture",
+        default_purpose="ESC Fixture",
         boot_settle=float(os.environ.get("ARDUINO_BOOT_SETTLE", str(BOOT_SETTLE_SECONDS))),
     ),
 }
@@ -282,7 +281,7 @@ def get_motor(motor_id: str) -> StepperMotor | None:
 
 
 def connect_all() -> dict[str, bool]:
-    """Attempt initial connection to both Arduinos concurrently on startup."""
+    """Attempt initial connection to both Arduinos sequentially to catch duplicate symlinks."""
     results: dict[str, bool] = {}
     threads: list[threading.Thread] = []
 
