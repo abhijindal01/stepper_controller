@@ -4,11 +4,13 @@
  *   bash tests/check_firmware.sh
  *
  * It runs the REAL firmware sources against the stub Arduino core
- * (tests/host_stubs) and checks the two behaviours that are easy to get
- * silently wrong:
+ * (tests/host_stubs) and checks:
  *
- *   1. the position + homed flag survive a reboot (EEPROM restore)
+ *   1. Position, homed flag, and forward/backward limits survive a reboot
  *   2. CLEAR LIMITS gives +/- CLEAR_LIMIT_STEPS (85000), not 2000000000
+ *   3. LOAD_LIMITS persists project limits across reboots
+ *   4. Legacy 2000000000 EEPROM limits migrate down to +/- 85000
+ *   5. SAVE_POSITION / RESET_STATE / HOME serial commands behave properly
  *
  * No hardware needed.
  */
@@ -25,16 +27,11 @@
 #include "Status.h"
 
 
-// defined by the stub core - lets us fake the switches
 extern int g_pinState[64];
 
-
-// prototypes the Arduino IDE would normally generate for us
 void checkEmergencyStop();
 void emergencyState();
 
-
-// the sketch itself
 #include "../StepperController.ino"
 
 
@@ -60,19 +57,13 @@ void check(bool condition, const char* what)
 
 void idle_pins()
 {
-    // INPUT_PULLUP wiring: everything idle is HIGH, active is LOW.
     for (int i = 0; i < 64; i++)
     {
         g_pinState[i] = HIGH;
     }
 
-    // home limit switch pressed so the homing sequence can finish
     g_pinState[HOME_PIN] = HIGH;
-
-    // emergency stop is triggered by LOW - keep it released
     g_pinState[ESTOP_PIN] = HIGH;
-
-    // manual toggle switches released (active LOW)
     g_pinState[FORWARD_SWITCH] = HIGH;
     g_pinState[BACKWARD_SWITCH] = HIGH;
 }
@@ -103,13 +94,13 @@ int main()
     setup();
 
     check(state == FAST_HOMING, "first boot starts homing");
+    check(forwardLimit == 85000L, "initial forward limit is 85000");
+    check(backwardLimit == -85000L, "initial backward limit is -85000");
 
     run_loops(20000);
 
     check(state == READY, "homing finishes");
-
     check(homed == true, "homed flag set after homing");
-
     check(currentPosition == 0, "origin is 0 after homing");
 
 
@@ -124,8 +115,6 @@ int main()
 
     currentPosition = 12345;
 
-    // Let the 1-second auto-backup interval expire. The host millis()
-    // advances in short increments, just as time passes during motion.
     run_loops(200);
 
     updatePositionBackup();
@@ -136,53 +125,82 @@ int main()
     // ================================================
 
     currentPosition = 0;
-
     homed = false;
-
     state = FAST_HOMING;
 
     setup();
 
     check(state == READY, "does NOT re-home after reboot");
-
     check(currentPosition == 12345, "position restored after reboot");
-
     check(homed == true, "homed flag restored after reboot");
-
     check(forwardLimit == 45000, "forward limit restored after reboot");
-
     check(backwardLimit == -40000, "backward limit restored after reboot");
 
 
     // ================================================
-    // CLEAR LIMITS -> +/- 85000
+    // LOAD_LIMITS SERIAL COMMAND PERSISTS ACROSS REBOOT
     // ================================================
 
-    forwardLimit = 500;
+    Serial.feed("LOAD_LIMITS,64560,50000");
+    loop();
 
-    backwardLimit = -500;
+    check(forwardLimit == 64560L, "LOAD_LIMITS sets forward limit");
+    check(backwardLimit == 50000L, "LOAD_LIMITS sets backward limit");
 
-    clearLimits();
+    forwardLimit = 0;
+    backwardLimit = 0;
+    setup();
+
+    check(forwardLimit == 64560L, "LOAD_LIMITS forward limit survives reboot");
+    check(backwardLimit == 50000L, "LOAD_LIMITS backward limit survives reboot");
+
+
+    // ================================================
+    // CLEAR LIMITS -> +/- 85000 (AND SURVIVES REBOOT)
+    // ================================================
+
+    Serial.feed("CLEAR_LIMITS");
+    loop();
 
     check(forwardLimit == 85000L, "clear limits -> forward = 85000");
-
     check(backwardLimit == -85000L, "clear limits -> backward = -85000");
 
+    forwardLimit = 999;
+    backwardLimit = -999;
+    setup();
+
+    check(forwardLimit == 85000L, "cleared forward limit = 85000 after reboot");
+    check(backwardLimit == -85000L, "cleared backward limit = -85000 after reboot");
+
 
     // ================================================
-    // HOME COMMAND FORGETS THE STORED STATE
+    // LEGACY 2,000,000,000 EEPROM MIGRATION -> 85,000
     // ================================================
 
-    currentPosition = 999;
-
-    saveState(false);
-
-    wipeState();
+    long legacyFwd = 2000000000L;
+    long legacyBwd = -2000000000L;
+    byte validByte = EEPROM_VALID;
+    EEPROM.put(EEPROM_FORWARD, legacyFwd);
+    EEPROM.put(EEPROM_BACKWARD, legacyBwd);
+    EEPROM.put(EEPROM_MAGIC, validByte);
 
     setup();
 
-    check(homed == false, "wipeState clears the homed flag");
+    check(forwardLimit == 85000L, "legacy 2000000000 forward clamped to 85000");
+    check(backwardLimit == -85000L, "legacy -2000000000 backward clamped to -85000");
 
+
+    // ================================================
+    // HOME / RESET_STATE WIPES THE STORED STATE
+    // ================================================
+
+    currentPosition = 999;
+    saveState(false);
+
+    wipeState();
+    setup();
+
+    check(homed == false, "wipeState clears the homed flag");
     check(state == FAST_HOMING, "board homes again after the state is wiped");
 
     run_loops(20000);
@@ -193,7 +211,6 @@ int main()
     // ================================================
 
     std::cout << "--------------------" << std::endl;
-
     std::cout << checks << " checks, " << failures << " failure(s)" << std::endl;
 
     return failures == 0 ? 0 : 1;

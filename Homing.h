@@ -2,6 +2,8 @@
 #define HOMING_H
 
 
+void resetHomingOffset();
+
 void fastHome();
 
 void moveOffset();

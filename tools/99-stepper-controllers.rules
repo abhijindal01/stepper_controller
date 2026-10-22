@@ -1,18 +1,9 @@
-# Fixed names for the two stepper Arduinos, tied to the PHYSICAL USB SOCKET
-# on the Raspberry Pi (so they never swap, whatever order they boot in).
+# Fixed device names for the two stepper-controller Arduinos on one Raspberry Pi.
+# Canonical rule file lives at udev/99-stepper-controllers.rules (or generate
+# automatically with `sudo bash tools/setup_udev.sh`).
 #
-# 1) Plug each Arduino into the socket it will always use.
-# 2) For each one run (ttyACM0 / ttyUSB0 -- whichever appears):
-#       udevadm info -a -n /dev/ttyACM0 | grep -E 'KERNELS=="[0-9]+-[0-9.]+"' | head -1
-#    It prints something like  KERNELS=="1-1.3"
-# 3) Put those values below, then install:
-#       sudo cp tools/99-stepper-controllers.rules /etc/udev/rules.d/
-#       sudo udevadm control --reload-rules && sudo udevadm trigger
-#       ls -l /dev/stepper_controller*
+#   MOTOR 1  ->  /dev/stepper_a
+#   MOTOR 2  ->  /dev/stepper_b
 
-# Axis 1  ->  /dev/stepper_controller   (name the old setup already used)
-SUBSYSTEM=="tty", KERNELS=="1-1.2", SYMLINK+="stepper_controller"
-
-# Axis 2  ->  /dev/stepper_controller2
-SUBSYSTEM=="tty", KERNELS=="1-1.3", SYMLINK+="stepper_controller2"
-
+SUBSYSTEM=="tty", KERNELS=="1-1.2", SYMLINK+="stepper_a", MODE="0666"
+SUBSYSTEM=="tty", KERNELS=="1-1.3", SYMLINK+="stepper_b", MODE="0666"

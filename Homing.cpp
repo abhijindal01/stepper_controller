@@ -2,19 +2,23 @@
 
 #include "Config.h"
 #include "State.h"
+#include "Machine.h"
 #include "Homing.h"
 #include "Motion.h"
 
 
-
 extern long currentPosition;
-
 extern unsigned long waitStart;
-
 extern bool homed;
-
 extern MachineState state;
 
+static long offsetSteps = 0;
+
+
+void resetHomingOffset()
+{
+    offsetSteps = 0;
+}
 
 
 // ==================================================
@@ -23,45 +27,18 @@ extern MachineState state;
 
 void fastHome()
 {
+    digitalWrite(DIR_PIN, CLOCKWISE);
 
-
-    digitalWrite(
-        DIR_PIN,
-        CLOCKWISE
-    );
-
-
-
-    // Home switch reached
-
-    if(
-      digitalRead(HOME_PIN)==HOME_TRIGGER
-    )
+    if (digitalRead(HOME_PIN) == HOME_TRIGGER)
     {
-
-
-        Serial.println(
-        "FIRST HOME FOUND"
-        );
-
-
-
+        Serial.println("FIRST HOME FOUND");
+        offsetSteps = 0;
         state = MOVE_OFFSET;
-
-
         return;
-
     }
 
-
-
-    stepMotor(
-        FAST_HOME_SPEED
-    );
-
-
+    stepMotor(FAST_HOME_SPEED);
 }
-
 
 
 // ==================================================
@@ -70,58 +47,22 @@ void fastHome()
 
 void moveOffset()
 {
+    digitalWrite(DIR_PIN, ANTICLOCKWISE);
 
-
-    digitalWrite(
-        DIR_PIN,
-        ANTICLOCKWISE
-    );
-
-
-
-    static long offsetSteps = 0;
-
-
-
-    if(offsetSteps < HOME_OFFSET_STEPS)
+    if (offsetSteps < HOME_OFFSET_STEPS)
     {
-
-
-        stepMotor(
-            NORMAL_SPEED
-        );
-
-
+        stepMotor(NORMAL_SPEED);
         offsetSteps++;
-
-
         return;
-
-
     }
 
-
-
-    offsetSteps=0;
-
-
-
+    offsetSteps = 0;
     waitStart = millis();
 
-
-
-    Serial.println(
-    "OFFSET COMPLETE"
-    );
-
-
+    Serial.println("OFFSET COMPLETE");
 
     state = WAITING;
-
-
 }
-
-
 
 
 // ==================================================
@@ -130,29 +71,12 @@ void moveOffset()
 
 void waitHome()
 {
-
-
-    if(
-       millis()-waitStart >= HOME_WAIT_TIME
-    )
+    if (millis() - waitStart >= HOME_WAIT_TIME)
     {
-
-
-        Serial.println(
-        "FINAL HOMING"
-        );
-
-
-
+        Serial.println("FINAL HOMING");
         state = FINAL_HOMING;
-
-
     }
-
-
 }
-
-
 
 
 // ==================================================
@@ -161,52 +85,21 @@ void waitHome()
 
 void finalHome()
 {
+    digitalWrite(DIR_PIN, CLOCKWISE);
 
-
-    digitalWrite(
-        DIR_PIN,
-        CLOCKWISE
-    );
-
-
-
-    if(
-      digitalRead(HOME_PIN)==HOME_TRIGGER
-    )
+    if (digitalRead(HOME_PIN) == HOME_TRIGGER)
     {
-
-
         currentPosition = 0;
-
-
-
         homed = true;
 
+        saveState(false);
 
-
-        Serial.println(
-        "ORIGIN SET"
-        );
-
-
-        Serial.println(
-        "READY"
-        );
-
-
+        Serial.println("ORIGIN SET");
+        Serial.println("READY");
 
         state = READY;
-
-
-
         return;
-
     }
 
-
-
-    stepMotor(
-        SLOW_HOME_SPEED
-    );
-
+    stepMotor(SLOW_HOME_SPEED);
 }
