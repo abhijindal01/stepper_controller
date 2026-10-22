@@ -14,3 +14,7 @@ venv/
 
 # Logs
 *.log
+
+# Design preview mockups
+docs/mockups/
+Unselected files/

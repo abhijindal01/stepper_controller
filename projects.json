@@ -17,11 +17,11 @@
     },
     "_meta": {
         "motor1": {
-            "purpose": "H7 Pad-Test Fixture",
+            "purpose": "H7 Fixture",
             "active_project": null
         },
         "motor2": {
-            "purpose": "ESC Test Fixture",
+            "purpose": "ESC Fixture",
             "active_project": null
         }
     }
