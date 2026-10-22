@@ -1,0 +1,44 @@
+# =============================================================
+# Stable device names for the two stepper-controller Arduinos
+# =============================================================
+#
+# Install to:  /etc/udev/rules.d/99-stepper-controllers.rules
+#
+#   sudo cp udev/99-stepper-controllers.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger
+#   ls -l /dev/stepper_a /dev/stepper_b
+#
+# ...or just let the helper script fill this in for you:
+#
+#   sudo bash tools/setup_udev.sh
+#
+# WHY: /dev/ttyUSB0 and /dev/ttyACM1 are handed out in the order the
+# kernel happens to find the boards, so after a reboot MOTOR 1 and
+# MOTOR 2 can silently swap. The Pi talks to the boards over the fixed
+# names below (see steppers.py), so that can never happen:
+#
+#       /dev/stepper_a  ->  MOTOR 1
+#       /dev/stepper_b  ->  MOTOR 2
+#
+# Best option is to match on each board's USB serial number - it is
+# unique and follows the board to any port. Cheap CH340 clones often
+# report no serial; for those, match on the physical USB socket
+# (KERNELS) instead, which is stable as long as the board stays in the
+# same socket.
+# -------------------------------------------------------------
+
+
+# ---- MOTOR 1 -> /dev/stepper_a --------------------------------
+# By serial number (preferred) - replace with the serial of your board:
+# SUBSYSTEM=="tty", ATTRS{serial}=="SERIAL_OF_MOTOR_1_BOARD", SYMLINK+="stepper_a", MODE="0666"
+
+# By physical USB socket (fallback for boards without a serial):
+SUBSYSTEM=="tty", KERNELS=="1-1.2", SYMLINK+="stepper_a", MODE="0666"
+
+
+# ---- MOTOR 2 -> /dev/stepper_b --------------------------------
+# By serial number (preferred) - replace with the serial of your board:
+# SUBSYSTEM=="tty", ATTRS{serial}=="SERIAL_OF_MOTOR_2_BOARD", SYMLINK+="stepper_b", MODE="0666"
+
+# By physical USB socket (fallback for boards without a serial):
+SUBSYSTEM=="tty", KERNELS=="1-1.3", SYMLINK+="stepper_b", MODE="0666"

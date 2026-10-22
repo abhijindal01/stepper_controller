@@ -1,0 +1,18 @@
+[Unit]
+Description=Stepper Controller web dashboard (2 Arduinos on 1 Raspberry Pi)
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/stepper_controller
+ExecStart=/home/pi/stepper_controller/venv/bin/python /home/pi/stepper_controller/server.py
+Restart=always
+RestartSec=5
+
+# Never commit the password to git - put it in this file instead:
+#   /home/pi/stepper_controller/deploy/stepper-web.env  (chmod 600)
+EnvironmentFile=-/home/pi/stepper_controller/deploy/stepper-web.env
+
+[Install]
+WantedBy=multi-user.target

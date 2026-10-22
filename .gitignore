@@ -1,0 +1,16 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Editor temporary files
+*.swp
+*.swo
+*~
+
+# Local settings and virtual environments
+.local/
+venv/
+.venv/
+
+# Logs
+*.log

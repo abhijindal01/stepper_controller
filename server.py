@@ -1,11 +1,26 @@
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
+"""
+Stepper Controller web server (Raspberry Pi).
+
+ONE Raspberry Pi, TWO Arduinos, TWO stepper motors.
+
+    /dev/stepper_a  ->  MOTOR 1
+    /dev/stepper_b  ->  MOTOR 2
+
+The ports are hardcoded in steppers.py - see the comments there and
+udev/99-stepper-controllers.rules for how the stable names are created.
+
+Each motor has its OWN independent project list (saved forward/backward
+limits) and its own controls on the dashboard.
+"""
+
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, abort
 from functools import wraps
+
 import json
 import os
 import secrets
-import serial
-import time
-import threading
+
+from steppers import MOTORS, MOTOR_IDS, get_motor, connect_all
 
 
 app = Flask(__name__)
@@ -22,37 +37,17 @@ APP_PASSWORD = os.environ.get("APP_PASSWORD", "atol@a616")
 app.secret_key = os.environ.get("APP_SECRET_KEY", secrets.token_hex(16))
 
 
-PROJECT_FILE = "projects.json"
-
-serial_lock = threading.Lock()
+PROJECT_FILE = os.environ.get("PROJECT_FILE", "projects.json")
 
 
 # ==========================
 # ARDUINO SERIAL
 # ==========================
+# Both boards are opened here. If a board is not plugged in yet the
+# Motor object keeps retrying (rate limited) whenever a command is sent,
+# so the Pi does not have to be restarted after reconnecting a cable.
 
-try:
-
-    arduino = serial.Serial(
-        "/dev/stepper_controller",
-        115200,
-        timeout=1
-    )
-
-    time.sleep(2)
-
-    arduino.reset_input_buffer()
-
-    print("Arduino Connected")
-
-
-except Exception as e:
-
-    arduino = None
-
-    print("Arduino Not Connected")
-    print(e)
-
+connect_all()
 
 
 # ==========================
@@ -63,6 +58,7 @@ except Exception as e:
 def login_required(f):
 
     @wraps(f)
+
     def wrapped(*args, **kwargs):
 
         if not session.get("logged_in"):
@@ -118,23 +114,92 @@ def logout():
 # ==========================
 # PROJECT HANDLING
 # ==========================
+# projects.json now keeps ONE SEPARATE LIST PER MOTOR:
+#
+#   {
+#     "motor1": { "H7": {"forward": 54753, "backward": 35000}, ... },
+#     "motor2": { "H7": {"forward": 12000, "backward": -500},  ... }
+#   }
+#
+# The old flat format ({ "H7": {...} } with no motor key) is migrated
+# automatically the first time it is loaded - old projects become
+# MOTOR 1 projects.
 
 
-def load_projects():
+def empty_project_store():
+
+    return {motor_id: {} for motor_id in MOTOR_IDS}
+
+
+
+def looks_like_project(value):
+
+    return (
+        isinstance(value, dict)
+        and "forward" in value
+        and "backward" in value
+    )
+
+
+
+def load_all_projects():
 
     if not os.path.exists(PROJECT_FILE):
 
-        return {}
-
-    with open(PROJECT_FILE,"r") as f:
-
-        return json.load(f)
+        return empty_project_store()
 
 
+    with open(PROJECT_FILE, "r") as f:
 
-def save_projects(data):
+        try:
+            data = json.load(f)
+        except ValueError:
+            return empty_project_store()
 
-    with open(PROJECT_FILE,"w") as f:
+
+    if not isinstance(data, dict):
+        return empty_project_store()
+
+
+    # ---- legacy flat file -> migrate to per-motor ----
+
+    legacy = {
+        name: value
+        for name, value in data.items()
+        if looks_like_project(value)
+    }
+
+    if legacy:
+
+        data = empty_project_store()
+
+        data["motor1"] = legacy
+
+        save_all_projects(data)
+
+        print("Migrated %d project(s) to MOTOR 1" % len(legacy))
+
+        return data
+
+
+    # ---- current format: make sure every motor has a list ----
+
+    store = empty_project_store()
+
+    for motor_id in MOTOR_IDS:
+
+        projects = data.get(motor_id, {})
+
+        if isinstance(projects, dict):
+            store[motor_id] = projects
+
+    return store
+
+
+
+def save_all_projects(data):
+
+    with open(PROJECT_FILE, "w") as f:
 
         json.dump(
             data,
@@ -144,72 +209,51 @@ def save_projects(data):
 
 
 
+def load_projects(motor_id):
+
+    return load_all_projects().get(motor_id, {})
+
+
+
+def save_projects(motor_id, projects):
+
+    data = load_all_projects()
+
+    data[motor_id] = projects
+
+    save_all_projects(data)
+
+
+
 # ==========================
-# SEND COMMAND
+# JSON HELPERS
 # ==========================
 
 
-def send_command(cmd):
+def motor_or_404(motor_id):
 
-    if arduino is None:
+    motor = get_motor(motor_id)
 
-        return None
+    if motor is None:
+        abort(404)
 
-
-    try:
-
-        with serial_lock:
-
-
-            print("SEND:",cmd)
-
-
-            # remove old messages
-            arduino.reset_input_buffer()
-
-
-            arduino.write(
-                (cmd+"\n").encode()
-            )
-
-            arduino.flush()
-
-
-            start=time.time()
-
-
-            while time.time()-start < 5:
-
-
-                if arduino.in_waiting:
-
-
-                    line = arduino.readline().decode(
-                        errors="ignore"
-                    ).strip()
-
-
-                    print("ARDUINO:",line)
-
-
-                    if line:
-
-                        return line
+    return motor
 
 
 
-            print("NO RESPONSE")
+def command_response(motor, command, reply):
 
-            return None
-
-
-
-    except Exception as e:
-
-        print("SERIAL ERROR:",e)
-
-        return None
-
+    return jsonify(
+        {
+            "ok": reply is not None,
+            "motor": motor.id,
+            "port": motor.port,
+            "command": command,
+            "response": reply,
+            "connected": motor.connected,
+            "error": None if reply is not None else (motor.last_error or "NO RESPONSE"),
+        }
+    )
 
 
 
@@ -224,39 +268,218 @@ def index():
 
     return render_template(
         "index.html",
-        projects=load_projects()
+        motors=[MOTORS[motor_id].info() for motor_id in MOTOR_IDS],
+        projects=load_all_projects()
     )
 
 
 
 # ==========================
-# ADD PROJECT
+# MOTOR LIST / CONNECTION
 # ==========================
 
 
-@app.route("/add_project",methods=["POST"])
+@app.route("/api/motors")
 @login_required
-def add_project():
+def api_motors():
+
+    return jsonify(
+        [MOTORS[motor_id].info() for motor_id in MOTOR_IDS]
+    )
+
+
+
+@app.route("/api/motor/<motor_id>/connect", methods=["POST"])
+@login_required
+def motor_connect(motor_id):
+
+    motor = motor_or_404(motor_id)
+
+    motor.disconnect()
+
+    motor.connect()
+
+    return jsonify(motor.info())
+
+
+
+# ==========================
+# MOTOR STATUS
+# ==========================
+
+
+@app.route("/api/motor/<motor_id>/status")
+@login_required
+def motor_status(motor_id):
+
+    motor = motor_or_404(motor_id)
+
+    status = motor.status()
+
+    if status is None:
+
+        return jsonify(
+            {
+                "error": "NO RESPONSE",
+                "connected": motor.connected,
+                "port": motor.port,
+                "message": motor.last_error or "Arduino not connected",
+            }
+        )
+
+    status["connected"] = True
+
+    status["port"] = motor.port
+
+    return jsonify(status)
+
+
+
+@app.route("/api/motor/<motor_id>/position")
+@login_required
+def motor_position(motor_id):
+
+    motor = motor_or_404(motor_id)
+
+    return jsonify(
+        {
+            "position": motor.position()
+        }
+    )
+
+
+
+# ==========================
+# MOTOR ACTIONS
+# ==========================
+# Every entry maps a short dashboard action name onto the command the
+# Arduino firmware understands.
+
+ACTIONS = {
+
+    "home":          "HOME",
+    "stop":          "STOP",
+    "estop":         "ESTOP",
+
+    "move_forward":  "FORWARD",
+    "move_backward": "BACKWARD",
+
+    "jog_forward":   "JOG 1",
+    "jog_backward":  "JOG -1",
+
+    "save_forward":  "SAVE_FORWARD",
+    "save_backward": "SAVE_BACKWARD",
+    "clear_limits":  "CLEAR_LIMITS",
+
+    "save_position": "SAVE_POSITION",
+    "reset_state":   "RESET_STATE",
+
+}
+
+
+
+@app.route("/api/motor/<motor_id>/action/<action_name>", methods=["POST"])
+@login_required
+def motor_action(motor_id, action_name):
+
+    motor = motor_or_404(motor_id)
+
+    if action_name not in ACTIONS:
+
+        return jsonify(
+            {
+                "ok": False,
+                "error": "UNKNOWN ACTION",
+            }
+        ), 404
+
+
+    command = ACTIONS[action_name]
+
+    reply = motor.send(command)
+
+    return command_response(motor, command, reply)
+
+
+
+# Raw passthrough, handy from the browser console / curl:
+#   curl -X POST -d '{"command":"JOG 1"}' ...
+
+@app.route("/api/motor/<motor_id>/command", methods=["POST"])
+@login_required
+def motor_command(motor_id):
+
+    motor = motor_or_404(motor_id)
+
+    data = request.json or {}
+
+    command = str(data.get("command", "")).strip()
+
+    if not command:
+
+        return jsonify(
+            {
+                "ok": False,
+                "error": "MISSING COMMAND",
+            }
+        ), 400
+
+
+    reply = motor.send(command)
+
+    return command_response(motor, command, reply)
+
+
+
+# ==========================
+# PROJECTS (per motor)
+# ==========================
+
+
+@app.route("/api/motor/<motor_id>/projects")
+@login_required
+def motor_projects(motor_id):
+
+    motor_or_404(motor_id)
+
+    return jsonify(load_projects(motor_id))
+
+
+
+@app.route("/api/motor/<motor_id>/projects", methods=["POST"])
+@login_required
+def add_project(motor_id):
+
+    motor = motor_or_404(motor_id)
 
     data = request.json
 
     if not data:
 
-        return "MISSING REQUEST DATA", 400
+        return jsonify(
+            {
+                "ok": False,
+                "error": "MISSING REQUEST DATA"
+            }
+        ), 400
 
 
-    name = data.get("name", "").strip()
+    name = str(data.get("name", "")).strip()
 
     if not name:
 
-        return "PROJECT NAME IS REQUIRED", 400
+        return jsonify(
+            {
+                "ok": False,
+                "error": "PROJECT NAME IS REQUIRED"
+            }
+        ), 400
 
 
-    # forward/backward come from the browser as strings (even from a
-    # number input, JS sends them as text) -- and can be "" if the user
-    # left the field blank. int("") crashes with an unhandled ValueError,
-    # which is exactly what was producing the 500 error. Validate first
-    # and return a normal error response instead of letting it crash.
+    # forward/backward arrive from the browser as strings (even from a
+    # number input) and can be "" when the field is left blank.
+    # int("") raises ValueError - validate first and answer with a
+    # normal error instead of a 500.
 
     try:
 
@@ -264,305 +487,99 @@ def add_project():
 
         backward_val = int(data.get("backward", ""))
 
-
     except (ValueError, TypeError):
 
-        return "FORWARD AND BACKWARD LIMITS MUST BE WHOLE NUMBERS (NOT BLANK)", 400
+        return jsonify(
+            {
+                "ok": False,
+                "error": "FORWARD AND BACKWARD LIMITS MUST BE WHOLE NUMBERS (NOT BLANK)"
+            }
+        ), 400
 
 
-    projects = load_projects()
-
+    projects = load_projects(motor_id)
 
     projects[name] = {
-
         "forward": forward_val,
-
         "backward": backward_val
-
     }
 
+    save_projects(motor_id, projects)
 
-    save_projects(projects)
-
-
-    return "PROJECT SAVED"
-
-
-
-
-# ==========================
-# SELECT PROJECT
-# ==========================
+    return jsonify(
+        {
+            "ok": True,
+            "message": "PROJECT SAVED",
+            "motor": motor.id,
+            "project": projects[name]
+        }
+    )
 
 
-@app.route("/select_project",methods=["POST"])
+
+@app.route("/api/motor/<motor_id>/projects/<name>/load", methods=["POST"])
 @login_required
-def select_project():
+def select_project(motor_id, name):
 
-    data=request.json
+    motor = motor_or_404(motor_id)
 
-    name=data["name"]
-
-
-    projects=load_projects()
-
+    projects = load_projects(motor_id)
 
     if name not in projects:
 
-        return "PROJECT NOT FOUND"
+        return jsonify(
+            {
+                "ok": False,
+                "error": "PROJECT NOT FOUND"
+            }
+        ), 404
 
 
+    project = projects[name]
 
-    p=projects[name]
-
-
-    result = send_command(
-        f"LOAD_LIMITS,{p['forward']},{p['backward']}"
+    command = "LOAD_LIMITS,%d,%d" % (
+        project["forward"],
+        project["backward"]
     )
 
-    return result if result else "NO RESPONSE"
+    reply = motor.send(command)
+
+    result = command_response(motor, command, reply).get_json()
+
+    result["project"] = name
+
+    return jsonify(result)
 
 
 
-
-# ==========================
-# DELETE PROJECT
-# ==========================
-
-
-@app.route("/delete_project/<name>")
+@app.route("/api/motor/<motor_id>/projects/<name>", methods=["DELETE"])
 @login_required
-def delete_project(name):
+def delete_project(motor_id, name):
 
-    projects=load_projects()
+    motor_or_404(motor_id)
 
+    projects = load_projects(motor_id)
 
-    if name in projects:
+    if name not in projects:
 
-        del projects[name]
-
-        save_projects(projects)
-
-        return "PROJECT DELETED"
-
-
-    return "PROJECT NOT FOUND"
-
+        return jsonify(
+            {
+                "ok": False,
+                "error": "PROJECT NOT FOUND"
+            }
+        ), 404
 
 
+    del projects[name]
 
-# ==========================
-# STATUS
-# ==========================
-
-
-@app.route("/status")
-@login_required
-def status():
-
-
-    result=send_command("STATUS")
-
-
-    if result:
-
-
-        try:
-
-            return jsonify(
-                json.loads(result)
-            )
-
-
-        except:
-
-
-            return jsonify(
-                {
-                    "error":"INVALID DATA",
-                    "raw":result
-                }
-            )
-
+    save_projects(motor_id, projects)
 
     return jsonify(
         {
-            "error":"NO RESPONSE"
+            "ok": True,
+            "message": "PROJECT DELETED"
         }
     )
-
-
-
-
-# ==========================
-# POSITION
-# ==========================
-
-
-@app.route("/position")
-@login_required
-def position():
-
-    result=send_command(
-        "GET_POSITION"
-    )
-
-    return jsonify(
-        {
-            "position":result
-        }
-    )
-
-
-
-
-# ==========================
-# HOME
-# ==========================
-
-
-@app.route("/home")
-@login_required
-def home():
-
-    result = send_command(
-        "HOME"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-
-# ==========================
-# STOP
-# ==========================
-
-
-@app.route("/stop")
-@login_required
-def stop():
-
-    result = send_command(
-        "STOP"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-
-# ==========================
-# CONTINUOUS MOVE
-# Used for "hold to move" jog control,
-# e.g. while setting a limit by hand.
-# ==========================
-
-
-@app.route("/move/forward")
-@login_required
-def move_forward():
-
-    result = send_command(
-        "FORWARD"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-@app.route("/move/backward")
-@login_required
-def move_backward():
-
-    result = send_command(
-        "BACKWARD"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-
-# ==========================
-# SAVE LIMITS
-# ==========================
-
-
-@app.route("/save_forward")
-@login_required
-def save_forward():
-
-    result = send_command(
-        "SAVE_FORWARD"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-@app.route("/save_backward")
-@login_required
-def save_backward():
-
-    result = send_command(
-        "SAVE_BACKWARD"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-
-# ==========================
-# CLEAR LIMITS
-# ==========================
-
-
-@app.route("/clear_limits")
-@login_required
-def clear_limits():
-
-    result = send_command(
-        "CLEAR_LIMITS"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-
-# ==========================
-# JOG CONTROL
-# ==========================
-
-
-@app.route("/jog/forward")
-@login_required
-def jog_forward():
-
-
-    result = send_command(
-        "JOG 1"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
-
-
-@app.route("/jog/backward")
-@login_required
-def jog_backward():
-
-
-    result = send_command(
-        "JOG -1"
-    )
-
-    return result if result else "NO RESPONSE"
-
-
 
 
 
@@ -571,10 +588,10 @@ def jog_backward():
 # ==========================
 
 
-if __name__=="__main__":
-
+if __name__ == "__main__":
 
     app.run(
         host="0.0.0.0",
-        port=5000
+        port=int(os.environ.get("PORT", "5000")),
+        debug=os.environ.get("FLASK_DEBUG", "0") == "1"
     )

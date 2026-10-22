@@ -64,8 +64,8 @@
 
 // ================= LIMITS ===========================
 
-#define NO_FORWARD_LIMIT    2000000000L
-#define NO_BACKWARD_LIMIT  -2000000000L
+#define NO_FORWARD_LIMIT    65000
+#define NO_BACKWARD_LIMIT  -65000
 
 
 

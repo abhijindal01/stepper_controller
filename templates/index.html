@@ -234,6 +234,122 @@ font-weight:bold;
 
 
 
+.hw-row
+{
+display:flex;
+align-items:center;
+gap:10px;
+margin:12px 0;
+font-size:18px;
+}
+
+
+.hw-label
+{
+flex:1;
+}
+
+
+.hw-value
+{
+color:#facc15;
+font-weight:bold;
+}
+
+
+
+.stlink-log
+{
+width:100%;
+height:160px;
+margin-top:10px;
+padding:10px;
+box-sizing:border-box;
+border-radius:8px;
+border:1px solid #334155;
+background:#020617;
+color:#94a3b8;
+font-family:ui-monospace,monospace;
+font-size:12px;
+resize:vertical;
+white-space:pre-wrap;
+}
+
+
+
+.stlink-hint
+{
+font-size:14px;
+color:#94a3b8;
+margin:8px 0 12px;
+line-height:1.4;
+}
+
+
+
+.btn-row
+{
+display:flex;
+gap:8px;
+flex-wrap:wrap;
+}
+
+
+.btn-row button
+{
+flex:1;
+min-width:120px;
+}
+
+
+
+
+/* ---- axis selector (two Arduinos) ---- */
+.axisbar{
+display:flex;
+gap:10px;
+justify-content:center;
+flex-wrap:wrap;
+padding:12px 16px 0 16px;
+}
+
+.axisbtn{
+display:flex;
+align-items:center;
+gap:8px;
+padding:10px 20px;
+border-radius:10px;
+border:2px solid #475569;
+background:transparent;
+color:inherit;
+font-size:16px;
+font-weight:600;
+cursor:pointer;
+}
+
+.axisbtn.active{
+border-color:#3b82f6;
+background:rgba(59,130,246,0.18);
+}
+
+.axisdot{
+width:10px;
+height:10px;
+border-radius:50%;
+background:#64748b;
+display:inline-block;
+}
+
+.axisdot.ok{ background:#22c55e; }
+.axisdot.bad{ background:#ef4444; }
+
+.axiswarn{
+text-align:center;
+color:#fca5a5;
+font-size:13px;
+padding:6px 16px 0 16px;
+min-height:18px;
+}
 </style>
 
 </head>
@@ -252,6 +368,29 @@ STEPPER CONTROLLER
 </div>
 
 
+<!-- AXIS SELECTOR: one tab per Arduino / stepper -->
+
+<div class="axisbar">
+
+{% for a in axes %}
+
+<button class="axisbtn"
+id="axisBtn{{a.id}}"
+onclick="setAxis('{{a.id}}')">
+
+<span class="axisdot" id="axisDot{{a.id}}"></span>
+
+{{a.label}}
+
+</button>
+
+{% endfor %}
+
+</div>
+
+<div class="axiswarn" id="axisWarn"></div>
+
+
 
 
 <div class="container">
@@ -268,6 +407,7 @@ STEPPER CONTROLLER
 
 <h2>
 Machine Status
+<span id="axisTitle" style="font-weight:400;opacity:0.7"></span>
 </h2>
 
 
@@ -363,7 +503,8 @@ Machine Projects
 
 {% for name,data in projects.items() %}
 
-<option value="{{name}}">
+<option value="{{name}}"
+data-axis="{{ data.get('axis', legacy_axis) }}">
 
 {{name}}
 
@@ -657,6 +798,271 @@ CLEAR LIMITS
 
 
 
+
+
+
+<!-- HARDWARE MONITOR -->
+
+
+<div class="card">
+
+
+<h2>
+Hardware Monitor
+</h2>
+
+
+
+<button class="blue"
+onclick="testBuzzer()">
+
+TEST BUZZER
+
+</button>
+
+
+
+<hr>
+
+
+
+<div class="hw-row">
+
+<span id="v45Light"
+class="light">
+</span>
+
+<span class="hw-label">
+4.5V Rail
+</span>
+
+<span id="v45Status"
+class="hw-value">
+--
+</span>
+
+</div>
+
+
+
+<div class="hw-row">
+
+<span id="v9Light"
+class="light">
+</span>
+
+<span class="hw-label">
+9V Rail
+</span>
+
+<span id="v9Status"
+class="hw-value">
+--
+</span>
+
+</div>
+
+
+
+<div class="hw-row">
+
+<span id="imuLight"
+class="light">
+</span>
+
+<span class="hw-label">
+IMU
+</span>
+
+<span id="imuStatus"
+class="hw-value">
+--
+</span>
+
+</div>
+
+
+
+<div class="hw-row">
+
+<span id="spiLight"
+class="light">
+</span>
+
+<span class="hw-label">
+SPI Communication
+</span>
+
+<span id="spiStatus"
+class="hw-value">
+--
+</span>
+
+</div>
+
+
+
+</div>
+
+
+
+
+
+
+<!-- ST-LINK / H7 PROGRAMMING -->
+
+
+<div class="card">
+
+
+<h2>
+ST-LINK / H7 Flash
+</h2>
+
+
+<p class="stlink-hint">
+No NRST on harness. Seat pogos (FORWARD contact), probe SWD, flash,
+then soft-run <em>or</em> power-cycle (BACKWARD → FORWARD).
+</p>
+
+
+
+<div class="hw-row">
+
+<span id="stlinkLight"
+class="light">
+</span>
+
+<span class="hw-label">
+ST-LINK USB
+</span>
+
+<span id="stlinkUsb"
+class="hw-value">
+--
+</span>
+
+</div>
+
+
+
+<div class="hw-row">
+
+<span id="stlinkSwdLight"
+class="light">
+</span>
+
+<span class="hw-label">
+SWD / Target
+</span>
+
+<span id="stlinkSwd"
+class="hw-value">
+--
+</span>
+
+</div>
+
+
+
+<div class="hw-row">
+
+<span class="hw-label">
+VTarget
+</span>
+
+<span id="stlinkVoltage"
+class="hw-value">
+--
+</span>
+
+</div>
+
+
+
+<hr>
+
+
+
+<label style="color:#94a3b8;font-size:14px;">
+Flash image
+</label>
+
+<select id="stlinkImage">
+<option value="">(none on disk — copy firmware first)</option>
+</select>
+
+
+
+<label style="color:#94a3b8;font-size:14px;margin-top:8px;display:block;">
+.bin base address (ignored for .hex)
+</label>
+
+<select id="stlinkBase">
+<option value="">auto (combined→0x08000000, app→0x08020000)</option>
+<option value="0x08000000">0x08000000 combined / bootloader</option>
+<option value="0x08020000">0x08020000 app only (BL present)</option>
+</select>
+
+
+
+<div class="btn-row">
+
+<button class="blue"
+onclick="stlinkContact()">
+SEAT CONTACT
+</button>
+
+<button class="blue"
+onclick="stlinkProbe()">
+PROBE SWD
+</button>
+
+</div>
+
+
+
+<div class="btn-row">
+
+<button class="green"
+onclick="stlinkFlash()">
+FLASH IMAGE
+</button>
+
+<button class="orange"
+onclick="stlinkSoftRun()">
+SOFT RUN
+</button>
+
+</div>
+
+
+
+<button class="orange"
+onclick="stlinkPowerCycle()">
+POWER CYCLE (BACKWARD → FORWARD)
+</button>
+
+
+
+<button class="green"
+onclick="stlinkFullProgram()">
+FULL: CONTACT → PROBE → FLASH → POWER CYCLE
+</button>
+
+
+
+<textarea id="stlinkLog"
+class="stlink-log"
+readonly
+placeholder="OpenOCD output…"></textarea>
+
+
+
+</div>
+
+
+
 </div>
 
 
@@ -668,6 +1074,123 @@ CLEAR LIMITS
 
 
 <script>
+
+// ======================================================
+// AXIS SELECTION (two Arduinos, one dashboard)
+// Every call that talks to an Arduino gets ?axis=N added,
+// so the existing buttons/functions below work unchanged
+// for whichever axis tab is selected.
+// /stlink/* routes are NOT tagged: the server always sends
+// those to the H7 contact axis (STLINK_AXIS in server.py).
+// ======================================================
+
+const AXIS_IDS = {{ axes|map(attribute='id')|list|tojson }};
+
+const AXIS_LABELS = {{ axes|tojson }};
+
+const ARDUINO_ROUTES = [
+"/status", "/position", "/home", "/stop",
+"/move/", "/jog/", "/save_", "/clear_limits",
+"/buzzer_test", "/select_project", "/add_project"
+];
+
+let currentAxis = "{{ default_axis }}";
+
+try {
+let saved = localStorage.getItem("axis");
+if (saved && AXIS_IDS.includes(saved)) currentAxis = saved;
+} catch(e) {}
+
+const _origFetch = window.fetch.bind(window);
+
+window.fetch = function(url, opts)
+{
+if (typeof url === "string" &&
+    ARDUINO_ROUTES.some(p => url.startsWith(p)))
+{
+url += (url.includes("?") ? "&" : "?") +
+       "axis=" + encodeURIComponent(currentAxis);
+}
+return _origFetch(url, opts);
+};
+
+
+function applyAxis()
+{
+AXIS_IDS.forEach(id =>
+{
+let b = document.getElementById("axisBtn" + id);
+if (b) b.classList.toggle("active", id === currentAxis);
+});
+
+let lbl = AXIS_LABELS.find(a => a.id === currentAxis);
+let title = document.getElementById("axisTitle");
+if (title && lbl) title.textContent = "- " + lbl.label;
+
+// show only the projects that belong to this axis
+let sel = document.getElementById("projectSelect");
+if (sel)
+{
+let first = null;
+Array.from(sel.options).forEach(o =>
+{
+let mine = o.dataset.axis === currentAxis;
+o.hidden = !mine;
+o.disabled = !mine;
+if (mine && first === null) first = o;
+});
+if (first) sel.value = first.value;
+else sel.selectedIndex = -1;
+}
+}
+
+
+function setAxis(id)
+{
+currentAxis = id;
+
+try { localStorage.setItem("axis", id); } catch(e) {}
+
+// don't show the other axis' numbers while waiting
+["machineStatus","position","homed","forwardLimit","backwardLimit"]
+.forEach(k => { let e = document.getElementById(k); if (e) e.innerHTML = "..."; });
+
+applyAxis();
+
+updateStatus();
+}
+
+
+function refreshAxes()
+{
+_origFetch("/axes")
+.then(r => r.json())
+.then(list =>
+{
+let warn = [];
+list.forEach(a =>
+{
+let d = document.getElementById("axisDot" + a.id);
+if (d)
+{
+d.classList.toggle("ok", a.connected);
+d.classList.toggle("bad", !a.connected);
+}
+if (!a.connected && a.error)
+warn.push(a.label + ": " + a.error);
+});
+let w = document.getElementById("axisWarn");
+if (w) w.textContent = warn.join("  |  ");
+})
+.catch(e => {});
+}
+
+applyAxis();
+
+setInterval(refreshAxes, 3000);
+
+refreshAxes();
+
 
 
 
@@ -852,6 +1375,415 @@ if(!confirm("Clear the saved forward and backward limits?"))
 fetch("/clear_limits")
 .then(r=>r.text())
 .then(alert);
+
+}
+
+
+
+
+
+// ==========================
+// HARDWARE MONITOR
+// ==========================
+
+
+function testBuzzer()
+{
+
+fetch("/buzzer_test")
+.then(r=>r.text())
+.then(alert);
+
+}
+
+
+
+
+// ==========================
+// ST-LINK / H7 FLASH
+// ==========================
+
+
+function stlinkAppendLog(text)
+{
+
+let el=document.getElementById("stlinkLog");
+
+el.value=(el.value?el.value+"\n":"")+text;
+
+el.scrollTop=el.scrollHeight;
+
+}
+
+
+
+function stlinkSetSwd(state, detail)
+{
+
+let light=document.getElementById("stlinkSwdLight");
+
+let text=document.getElementById("stlinkSwd");
+
+text.innerHTML=detail||state||"--";
+
+if(state=="ok")
+light.style.background="#22c55e";
+else if(state=="swd_fail" || state=="no_adapter" || state=="flash_fail" || state=="error")
+light.style.background="#ef4444";
+else if(state=="busy")
+light.style.background="#facc15";
+else
+light.style.background="#475569";
+
+}
+
+
+
+function refreshStlinkStatus()
+{
+
+fetch("/stlink/status")
+
+.then(r=>r.json())
+
+.then(s=>
+{
+
+let light=document.getElementById("stlinkLight");
+
+let usb=document.getElementById("stlinkUsb");
+
+if(s.adapter_present)
+{
+light.style.background="#22c55e";
+usb.innerHTML="PRESENT";
+}
+else
+{
+light.style.background="#ef4444";
+usb.innerHTML="MISSING";
+}
+
+
+let sel=document.getElementById("stlinkImage");
+
+let prev=sel.value;
+
+sel.innerHTML="";
+
+if(!s.images || !s.images.length)
+{
+
+let opt=document.createElement("option");
+
+opt.value="";
+
+opt.textContent="(none — place bins in firmware/indi_h743/)";
+
+sel.appendChild(opt);
+
+}
+else
+{
+
+s.images.forEach(img=>
+{
+
+let opt=document.createElement("option");
+
+opt.value=img.name;
+
+opt.textContent=img.name+" ("+img.role+", "+img.size+" B)";
+
+sel.appendChild(opt);
+
+});
+
+if(prev)
+sel.value=prev;
+
+}
+
+})
+
+.catch(()=>{});
+
+}
+
+
+
+function stlinkPost(url, body)
+{
+
+return fetch(url,
+{
+method:"POST",
+headers:{"Content-Type":"application/json"},
+body:JSON.stringify(body||{})
+})
+.then(r=>r.json().then(j=>({http:r.status, body:j})));
+
+}
+
+
+
+function stlinkContact()
+{
+
+stlinkSetSwd("busy","SEATING…");
+
+stlinkAppendLog("--- seat contact (H7 + FORWARD) ---");
+
+return stlinkPost("/stlink/contact",{load_h7:true})
+
+.then(res=>
+{
+
+stlinkAppendLog(JSON.stringify(res.body,null,2));
+
+if(res.body.ok)
+stlinkSetSwd("busy","CONTACT READY — probe next");
+else
+stlinkSetSwd("error","CONTACT TIMEOUT");
+
+return res.body;
+
+});
+
+}
+
+
+
+function stlinkProbe()
+{
+
+stlinkSetSwd("busy","PROBING…");
+
+stlinkAppendLog("--- probe SWD ---");
+
+return stlinkPost("/stlink/probe",{})
+
+.then(res=>
+{
+
+let b=res.body;
+
+document.getElementById("stlinkVoltage").innerHTML=
+(b.voltage!=null)?(b.voltage+" V"):"--";
+
+stlinkAppendLog(b.log||JSON.stringify(b,null,2));
+
+if(b.ok)
+stlinkSetSwd("ok","CONNECTED");
+else
+stlinkSetSwd(b.state||"error",(b.state||"FAIL").toUpperCase());
+
+refreshStlinkStatus();
+
+return b;
+
+});
+
+}
+
+
+
+function stlinkFlash()
+{
+
+let image=document.getElementById("stlinkImage").value;
+
+let base=document.getElementById("stlinkBase").value;
+
+if(!image)
+{
+alert("No flash image selected. Copy PadTest arducopter.bin (+ bootloader) into firmware/indi_h743/ and merge if needed.");
+return Promise.resolve(null);
+}
+
+stlinkSetSwd("busy","FLASHING…");
+
+stlinkAppendLog("--- flash "+image+(base?" @ "+base:"")+" ---");
+
+let body={image:image};
+
+if(base)
+body.base=base;
+
+return stlinkPost("/stlink/flash",body)
+
+.then(res=>
+{
+
+let b=res.body;
+
+stlinkAppendLog(b.log||JSON.stringify(b,null,2));
+
+if(b.ok || b.verified)
+stlinkSetSwd("ok","FLASHED — run or power-cycle");
+else
+stlinkSetSwd(b.state||"flash_fail",(b.state||"FLASH FAIL").toUpperCase());
+
+return b;
+
+});
+
+}
+
+
+
+function stlinkSoftRun()
+{
+
+stlinkSetSwd("busy","SOFT RUN…");
+
+stlinkAppendLog("--- soft run (no NRST) ---");
+
+return stlinkPost("/stlink/run",{})
+
+.then(res=>
+{
+
+let b=res.body;
+
+stlinkAppendLog(b.log||JSON.stringify(b,null,2));
+
+if(b.ok)
+stlinkSetSwd("ok","RUNNING (soft)");
+else
+stlinkSetSwd(b.state||"error",(b.state||"RUN FAIL").toUpperCase());
+
+return b;
+
+});
+
+}
+
+
+
+function stlinkPowerCycle()
+{
+
+stlinkSetSwd("busy","POWER CYCLE…");
+
+stlinkAppendLog("--- power cycle: BACKWARD → FORWARD ---");
+
+return stlinkPost("/stlink/power_cycle",{})
+
+.then(res=>
+{
+
+stlinkAppendLog(JSON.stringify(res.body,null,2));
+
+if(res.body.ok)
+stlinkSetSwd("ok","POWER CYCLED");
+else
+stlinkSetSwd("error",(res.body.state||"CYCLE FAIL").toUpperCase());
+
+return res.body;
+
+});
+
+}
+
+
+
+async function stlinkFullProgram()
+{
+
+if(!confirm("Run full program cycle?\nSeat contact → probe → flash → power cycle."))
+return;
+
+stlinkAppendLog("===== FULL PROGRAM START =====");
+
+let c=await stlinkContact();
+
+if(!c || !c.ok)
+{
+stlinkAppendLog("ABORT: contact failed");
+return;
+}
+
+let p=await stlinkProbe();
+
+if(!p || !p.ok)
+{
+if(!confirm("SWD probe failed. Flash anyway?"))
+{
+stlinkAppendLog("ABORT: probe failed");
+return;
+}
+}
+
+let f=await stlinkFlash();
+
+if(!f || !(f.ok || f.verified))
+{
+stlinkAppendLog("ABORT: flash failed");
+return;
+}
+
+await stlinkPowerCycle();
+
+stlinkAppendLog("===== FULL PROGRAM DONE =====");
+
+}
+
+
+
+
+// Lights up a hw-row's dot and fills in its text based on
+// whatever the Arduino reported for that field in /status.
+// Handles OK/FAIL strings, booleans, raw values, or the field
+// being absent (older firmware that doesn't send it yet).
+
+function setHwStatus(prefix, val)
+{
+
+let light=
+document.getElementById(prefix+"Light");
+
+
+let text=
+document.getElementById(prefix+"Status");
+
+
+if(val===undefined || val===null || val==="")
+{
+
+light.style.background="#475569";
+
+text.innerHTML="N/A";
+
+return;
+
+}
+
+
+text.innerHTML=val;
+
+
+if(val=="OK" || val===true)
+{
+
+light.style.background="#22c55e";
+
+}
+
+else if(val=="FAIL" || val===false)
+{
+
+light.style.background="#ef4444";
+
+}
+
+else
+{
+
+light.style.background="#facc15";
+
+}
+
 
 }
 
@@ -1063,6 +1995,18 @@ s.position;
 
 
 
+// hardware monitor -- rides along on the same status poll
+
+setHwStatus("v45", s.v4_5);
+
+setHwStatus("v9", s.v9);
+
+setHwStatus("imu", s.imu);
+
+setHwStatus("spi", s.spi);
+
+
+
 
 
 let light=
@@ -1120,6 +2064,17 @@ updateStatus,
 
 
 updateStatus();
+
+
+
+setInterval(
+refreshStlinkStatus,
+5000
+);
+
+
+
+refreshStlinkStatus();
 
 
 
