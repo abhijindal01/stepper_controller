@@ -236,6 +236,20 @@ class FourBoxSingleMotorConsoleTests(unittest.TestCase):
         self.assertEqual(r_release["command"], "DRIVER_OFF")
         self.assertEqual(self.fake_a.driver, "OFF")
 
+    def test_local_urls_advertises_name_then_ip(self):
+        urls = server.local_urls(5000, hostname="assurance", address="192.168.0.148")
+
+        self.assertEqual(
+            urls,
+            ["http://assurance.local:5000/", "http://192.168.0.148:5000/"],
+        )
+
+    def test_local_urls_without_a_lan_address(self):
+        urls = server.local_urls(8080, hostname="assurance.test.lan", address="")
+
+        # short name only, and no empty entry when the address is unknown
+        self.assertEqual(urls, ["http://assurance.local:8080/"])
+
     def test_duplicate_symlink_guard(self):
         with tempfile.TemporaryDirectory() as d:
             real_dev = Path(d) / "ttyACM0"

@@ -130,6 +130,13 @@ flags a board that still runs pre-2.2.0 firmware (exit code 1). A board that is
 energised far past the release window while `READY` is reported as a fault; an
 intentional **Hold Torque** override is reported but not treated as one.
 
+Everything above (service, hostname/mDNS, both boards, USB stability, board
+driver state) is collected by one read-only script:
+
+```bash
+bash tools/diagnose.sh
+```
+
 Manual checks:
 
 1. `STATUS` while idle → `"driver":"OFF"`, growing `"idle_ms"`.
@@ -146,3 +153,6 @@ Manual checks:
 * Serial reads are budgeted (`steppers.py`: `SERIAL_TIMEOUT`, `READ_BUDGET_SECONDS`,
   `MAX_REPLY_LINES`), so a board that falls off USB makes the dashboard report it
   instead of queueing requests until the page hangs.
+* Reaching the console by name (`assurance.local`, a router DNS entry, or the
+  Tailscale name) is documented in `docs/NETWORK_ACCESS.md`; set it up on the Pi
+  with `sudo bash tools/setup_hostname.sh`.

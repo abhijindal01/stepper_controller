@@ -1,0 +1,28 @@
+[Unit]
+Description=Stepper Controller web dashboard (2 Arduinos on 1 Raspberry Pi)
+After=network-online.target
+Wants=network-online.target
+# avahi is only needed for <hostname>.local; do not fail without it
+After=avahi-daemon.service
+
+[Service]
+Type=simple
+User=quality
+WorkingDirectory=/home/quality/stepper_controller
+
+# Log straight to journalctl, unbuffered
+Environment=PYTHONUNBUFFERED=1
+# Optional: APP_PASSWORD / APP_SECRET_KEY / PROJECT_FILE / WEB_THREADS
+EnvironmentFile=-/home/quality/stepper_controller/deploy/stepper-web.env
+
+ExecStart=/home/quality/stepper_controller/venv/bin/python /home/quality/stepper_controller/server.py
+
+# A board that falls off USB must never take the console down with it
+Restart=always
+RestartSec=5
+# Do not hammer restart on a broken install
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target
