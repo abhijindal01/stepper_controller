@@ -20,6 +20,7 @@ from functools import wraps
 import json
 import os
 import secrets
+import socket
 import threading
 import time
 from typing import Any
@@ -760,6 +761,40 @@ def stlink_power_cycle():
 # ENTRYPOINT
 # ==========================
 
+def _primary_ipv4() -> str | None:
+    """Best-effort LAN address of this machine (no packets are sent)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    try:
+        sock.connect(("8.8.8.8", 80))
+        address = sock.getsockname()[0]
+    except OSError:
+        return None
+    finally:
+        sock.close()
+
+    if not address or address.startswith("127."):
+        return None
+
+    return address
+
+
+def local_urls(port: int, hostname: str | None = None, address: str | None = None) -> list[str]:
+    """URLs the dashboard can be opened at: <name>.local first, then the IP.
+
+    `hostname` / `address` are injectable so this stays testable.
+    """
+    host = (hostname if hostname is not None else socket.gethostname()).split(".")[0]
+    ip = _primary_ipv4() if address is None else address
+
+    urls = [f"http://{host}.local:{port}/"]
+
+    if ip:
+        urls.append(f"http://{ip}:{port}/")
+
+    return urls
+
+
 def _serve() -> None:
     """Serve the dashboard.
 
@@ -772,6 +807,9 @@ def _serve() -> None:
     """
     port = int(os.environ.get("PORT", "5000"))
     threads = int(os.environ.get("WEB_THREADS", "8"))
+
+    for url in local_urls(port):
+        print(f"Dashboard: {url}", flush=True)
 
     if os.environ.get("FLASK_DEBUG", "0") == "1":
         app.run(host="0.0.0.0", port=port, debug=True)
