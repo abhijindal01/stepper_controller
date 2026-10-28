@@ -238,8 +238,10 @@ void processSerial()
     }
 
     // ===========================
-    // SET IDLE RELEASE TIME
+    // SET IDLE RELEASE TIME (PERSISTED IN EEPROM)
     // Example: SET_IDLE_MS,3000  (0 = never release)
+    // Survives a reboot, so a hold-torque setup is not lost when the
+    // board resets (USB re-enumeration, power blip).
     // ===========================
 
     if (cmd.startsWith("SET_IDLE_MS"))
@@ -260,6 +262,7 @@ void processSerial()
         }
 
         setDriverIdleHold((unsigned long)value);
+        saveIdleHoldToEEPROM(driverIdleHoldMs());
 
         Serial.print("IDLE_MS:");
         Serial.println(driverIdleHoldMs());

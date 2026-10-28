@@ -38,8 +38,12 @@ except ImportError:
 
 DEFAULT_PORTS = ("/dev/stepper_a", "/dev/stepper_b")
 SERVICE = "stepper_controller.service"
-SETTLE_SECONDS = 0.5
-REPLY_TIMEOUT = 2.0
+# Opening the port asserts DTR, which RESETS these native-USB boards.
+# They then spend ~2 s in the bootloader before setup() runs, and the first
+# command is swallowed. Mirrors BOOT_SETTLE_SECONDS in steppers.py.
+SETTLE_SECONDS = 2.5
+REPLY_TIMEOUT = 1.5
+STATUS_ATTEMPTS = 4
 
 # Neither of these replies existed before 2.2.0
 FIX_KEYS = ("driver", "idle_hold_ms")
@@ -82,24 +86,35 @@ def read_status(port: str) -> dict | None:
     try:
         time.sleep(SETTLE_SECONDS)
         connection.reset_input_buffer()
-        connection.write(b"STATUS\n")
-        connection.flush()
 
-        deadline = time.monotonic() + REPLY_TIMEOUT
-        buffer = b""
+        # The board may still be finishing setup after the reset, so retry
+        # instead of concluding "no reply" from a single attempt.
+        for attempt in range(STATUS_ATTEMPTS):
+            connection.write(b"STATUS\n")
+            connection.flush()
 
-        while time.monotonic() < deadline:
-            buffer += connection.readline()
-            line = buffer.strip()
+            deadline = time.monotonic() + REPLY_TIMEOUT
+            buffer = b""
 
-            if line.startswith(b"{") and line.endswith(b"}"):
-                try:
-                    return json.loads(line.decode("utf-8", errors="replace"))
-                except ValueError as exc:
-                    print(f"  {port}: invalid STATUS JSON ({exc}): {line[:120]!r}")
-                    return None
+            while time.monotonic() < deadline:
+                buffer += connection.readline()
+                line = buffer.strip()
 
-        print(f"  {port}: no STATUS reply")
+                if line.startswith(b"{") and line.endswith(b"}"):
+                    try:
+                        return json.loads(line.decode("utf-8", errors="replace"))
+                    except ValueError as exc:
+                        print(f"  {port}: invalid STATUS JSON ({exc}): {line[:120]!r}")
+                        return None
+
+                if line:
+                    # boot banner / progress chatter - not a status reply
+                    buffer = b""
+
+            time.sleep(0.4)
+
+        print(f"  {port}: no STATUS reply after {STATUS_ATTEMPTS} attempts")
+        print("           (Arduino IDE Serial Monitor open? board unplugged?)")
         return None
     finally:
         connection.close()
@@ -210,7 +225,7 @@ def main() -> int:
 
     if missing_fix:
         print("OLD firmware (no heat fix) on: " + ", ".join(missing_fix))
-        print("Upload StepperController.ino (firmware 2.2.0) to those boards -")
+        print("Upload StepperController.ino (firmware 2.2.1+) to those boards -")
         print("see docs/MOTOR_HEATING.md")
 
     if energised:
@@ -227,7 +242,7 @@ def main() -> int:
     if missing_fix or energised or failures:
         return 1
 
-    print("All boards run firmware 2.2.0.")
+    print("All boards run firmware with the idle release.")
 
     if holding:
         print("Holding torque by request on: " + ", ".join(holding))

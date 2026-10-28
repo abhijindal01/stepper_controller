@@ -14,6 +14,7 @@
  *   6. The driver is released when idle and re-energised on the next step
  *      (the motor-heating fix); torque is kept through homing/motion
  *   7. DRIVER_OFF / DRIVER_ON / SET_IDLE_MS and E-STOP release the coils
+ *   8. The idle-release window survives a reboot (0 = hold torque forever)
  *
  * No hardware needed.
  */
@@ -656,6 +657,32 @@ int main()
 
     run_loops(20000);
     check(state == READY, "re-homes after the E-stop is cleared");
+
+
+    // ================================================
+    // THE IDLE-RELEASE WINDOW SURVIVES A REBOOT
+    // (so "hold torque" is not lost on a board reset)
+    // ================================================
+
+    check(driverIdleHoldMs() == IDLE_HOLD_MS, "default window before saving");
+
+    Serial.feed("SET_IDLE_MS,0");
+    loop();
+    check(driverIdleHoldMs() == 0, "SET_IDLE_MS,0 disables the release");
+
+    setup();
+    check(driverIdleHoldMs() == 0, "never-release survives a reboot");
+    check(!driverIsEnabled(), "a reboot never energises the coils by itself");
+
+    idle_for_ms(IDLE_HOLD_MS * 4);
+    check(!driverIsEnabled(), "a released board stays released after reboot");
+
+    Serial.feed("SET_IDLE_MS,1500");
+    loop();
+    check(driverIdleHoldMs() == IDLE_HOLD_MS, "restoring the auto-release window");
+
+    setup();
+    check(driverIdleHoldMs() == IDLE_HOLD_MS, "auto-release survives a reboot");
 
 
     // ================================================
