@@ -64,11 +64,19 @@ void setup()
     holdDriver(false);
     driverDisable();
 
-    Serial.print("DRIVER IDLE RELEASE: ");
-    Serial.print(IDLE_HOLD_MS);
-    Serial.println(" ms");
-
     loadEEPROM();
+
+    Serial.print("DRIVER IDLE RELEASE: ");
+    Serial.print(driverIdleHoldMs());
+
+    if (driverIdleHoldMs() == 0)
+    {
+        Serial.println(" ms (HOLDING - coils never released)");
+    }
+    else
+    {
+        Serial.println(" ms");
+    }
 
     if (homed)
     {

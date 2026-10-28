@@ -14,6 +14,8 @@ void clearLimits();
 
 void saveState(bool verbose = false);
 
+void saveIdleHoldToEEPROM(unsigned long ms);
+
 void wipeState();
 
 void updatePositionBackup();

@@ -35,6 +35,7 @@
 #define IDLE_HOLD_MS        1500UL
 #endif
 
+// Default is applied when EEPROM holds no saved window.
 // Highest value accepted by the SET_IDLE_MS serial command (10 min)
 #define IDLE_HOLD_MS_MAX    600000UL
 
@@ -93,6 +94,12 @@
 #define EEPROM_STATE_MAGIC      52
 #define EEPROM_STATE_VALID      0x53545032UL
 
+// Driver idle-release window, set with SET_IDLE_MS and kept across reboots
+// 0 is a valid value ("never release"), so a separate marker is used.
+#define EEPROM_IDLE_HOLD        60
+#define EEPROM_IDLE_MAGIC       64
+#define EEPROM_IDLE_VALID       0xA7
+
 // Auto-backup interval (ms) to protect AVR EEPROM endurance
 #define POSITION_BACKUP_INTERVAL 1000UL
 
@@ -112,7 +119,7 @@
 
 // ================= FIRMWARE ========================
 
-#define FIRMWARE_VERSION "2.2.0"
+#define FIRMWARE_VERSION "2.2.1"
 
 
 #endif

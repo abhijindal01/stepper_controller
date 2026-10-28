@@ -31,7 +31,15 @@ MOTOR_1_PORT = "/dev/stepper_a"
 MOTOR_2_PORT = "/dev/stepper_b"
 
 BAUD_RATE = 115200
-SERIAL_TIMEOUT = 1.0
+
+# Fail fast. A single read used to be able to block for 1 s x 10 lines, so a
+# board that fell off USB held the per-motor lock for ~10 s. The dashboard
+# polls every second, requests piled up behind that lock and the page looked
+# dead until the board re-enumerated.
+SERIAL_TIMEOUT = 0.35
+READ_BUDGET_SECONDS = 1.5
+MAX_REPLY_LINES = 12
+
 BOOT_SETTLE_SECONDS = 2.0
 RECONNECT_COOLDOWN_SECONDS = 3.0
 
@@ -186,7 +194,12 @@ class StepperMotor:
                 self._serial.write((clean + "\n").encode("utf-8"))
                 self._serial.flush()
 
-                for _ in range(10):
+                deadline = time.monotonic() + READ_BUDGET_SECONDS
+
+                for _ in range(MAX_REPLY_LINES):
+                    if time.monotonic() > deadline:
+                        break
+
                     raw = self._serial.readline()
                     if not raw:
                         break

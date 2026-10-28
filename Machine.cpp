@@ -3,6 +3,7 @@
 
 #include "Config.h"
 #include "Machine.h"
+#include "Motion.h"
 
 
 // Variables are created in StepperController.ino
@@ -38,6 +39,23 @@ void saveLimitsToEEPROM()
 
 void loadEEPROM()
 {
+    // Restore the driver idle-release window first: 0 means "never
+    // release", i.e. keep holding torque, and it must survive a reboot
+    // so a held axis is not dropped just because the board reset.
+    byte idleMagic = 0;
+    EEPROM.get(EEPROM_IDLE_MAGIC, idleMagic);
+
+    if (idleMagic == EEPROM_IDLE_VALID)
+    {
+        uint32_t savedIdle = 0;
+        EEPROM.get(EEPROM_IDLE_HOLD, savedIdle);
+
+        setDriverIdleHold(savedIdle);
+
+        Serial.print("IDLE RELEASE WINDOW LOADED: ");
+        Serial.println(driverIdleHoldMs());
+    }
+
     byte check = 0;
     EEPROM.get(EEPROM_MAGIC, check);
 
@@ -104,6 +122,32 @@ void loadEEPROM()
     lastSavedHomed = false;
     stateStoredValid = false;
     lastBackupTime = millis();
+}
+
+
+// ==================================================
+// PERSIST THE DRIVER IDLE-RELEASE WINDOW
+// 0 = never release (holding torque kept while idle)
+// ==================================================
+
+void saveIdleHoldToEEPROM(unsigned long ms)
+{
+    // Only write when the value really changes, so repeated commands do
+    // not burn EEPROM cycles.
+    static long lastWritten = -1;
+
+    if (lastWritten == (long)ms)
+    {
+        return;
+    }
+
+    uint32_t value = ms;
+    byte magic = EEPROM_IDLE_VALID;
+
+    EEPROM.put(EEPROM_IDLE_HOLD, value);
+    EEPROM.put(EEPROM_IDLE_MAGIC, magic);
+
+    lastWritten = (long)ms;
 }
 
 

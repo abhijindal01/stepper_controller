@@ -64,7 +64,26 @@ thermal equilibrium — the "it heats after some time" behaviour.
 |----------------|--------|
 | `DRIVER_OFF` (alias `RELEASE`) | Release the coils immediately, cancel hold override |
 | `DRIVER_ON` (alias `HOLD`) | Energise and keep energised while idle |
-| `SET_IDLE_MS,<ms>` | Idle window before release, `0` = never release, max 600000 |
+| `SET_IDLE_MS,<ms>` | Idle window before release, `0` = never release, max 600000. **Saved to EEPROM**, so it survives a reboot. |
+
+The same choice is on the dashboard (**Driver Power / Heat Control** → the
+dropdown): *auto-release 1.5 s / 10 s / 60 s* or *never release (hold torque)*.
+The current value is read back from `STATUS` (`idle_hold_ms`), so the dropdown
+always shows what the board is really doing.
+
+### Holding torque vs. moving by hand
+
+With the coils released there is **no holding torque** — the axis turns freely
+by hand. That is not a fault; holding torque is coil current, and coil current
+is heat. Two consequences:
+
+* The step counter is open-loop. Any hand movement while released makes
+  `position` (and therefore the saved limits) wrong. **Press HOME after moving
+  the axis by hand** before resuming work.
+* `DRIVER_ON` / the hold override lives in RAM: a board reset drops it. The
+  persisted `SET_IDLE_MS,0` does not, which is the safer way to keep an axis
+  that must not sag. A vertical axis is still best served by a mechanical
+  brake or counterweight.
 
 The server exposes `DRIVER_OFF` / `DRIVER_ON` as the `driver_off` / `driver_on`
 actions, which the *Release (Cool)* and *Hold Torque* buttons call.
@@ -93,7 +112,7 @@ moving for a while:
 ## Verifying the fix
 
 ```bash
-bash tests/check_firmware.sh     # 74 host-side firmware checks
+bash tests/check_firmware.sh     # 81 host-side firmware checks
 python3 tests/test_server.py     # Flask API checks
 ```
 
@@ -118,3 +137,12 @@ Manual checks:
    `idle_hold_ms`.
 3. Leave the machine powered and idle for 15 minutes — the motor should stay
    at ambient temperature (or close to it).
+
+## Web console / service notes
+
+* `server.py` uses **Waitress** when it is installed (recommended for a Pi left
+  running for days) and falls back to the Flask development server otherwise:
+  `venv/bin/pip install waitress`, then `sudo systemctl restart stepper_controller`.
+* Serial reads are budgeted (`steppers.py`: `SERIAL_TIMEOUT`, `READ_BUDGET_SECONDS`,
+  `MAX_REPLY_LINES`), so a board that falls off USB makes the dashboard report it
+  instead of queueing requests until the page hangs.

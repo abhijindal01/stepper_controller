@@ -199,6 +199,11 @@ class FourBoxSingleMotorConsoleTests(unittest.TestCase):
         self.assertIn("driver_on", html)
         self.assertIn("Driver Power / Heat Control", html)
 
+        # ... including the persisted idle-release mode
+        self.assertIn('id="idleModeSelect"', html)
+        self.assertIn("Never release (hold torque)", html)
+        self.assertIn("applyIdleMode", html)
+
     def test_estop_stops_cleanly_without_locking_motor(self):
         self._login()
         r = self.client.post("/api/motor/motor1/action/estop").get_json()

@@ -760,9 +760,34 @@ def stlink_power_cycle():
 # ENTRYPOINT
 # ==========================
 
+def _serve() -> None:
+    """Serve the dashboard.
+
+    Waitress is used when it is installed (recommended for a Pi that is left
+    running for days): the Flask development server is single-process with a
+    small backlog and can wedge when a serial port stalls. Falls back to the
+    development server so an existing install keeps working unchanged.
+
+        venv/bin/pip install waitress
+    """
+    port = int(os.environ.get("PORT", "5000"))
+    threads = int(os.environ.get("WEB_THREADS", "8"))
+
+    if os.environ.get("FLASK_DEBUG", "0") == "1":
+        app.run(host="0.0.0.0", port=port, debug=True)
+        return
+
+    try:
+        from waitress import serve
+    except ImportError:
+        print("waitress not installed - using the Flask development server", flush=True)
+        print("    venv/bin/pip install waitress", flush=True)
+        app.run(host="0.0.0.0", port=port, debug=False)
+        return
+
+    print(f"Serving with waitress on 0.0.0.0:{port} ({threads} threads)", flush=True)
+    serve(app, host="0.0.0.0", port=port, threads=threads, ident="stepper-controller")
+
+
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", "5000")),
-        debug=os.environ.get("FLASK_DEBUG", "0") == "1",
-    )
+    _serve()

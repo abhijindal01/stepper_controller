@@ -853,6 +853,14 @@ input:focus {
                         Hold Torque
                     </button>
                 </div>
+                <div class="preset-bar">
+                    <select id="idleModeSelect" onchange="applyIdleMode()">
+                        <option value="1500">Auto-release after 1.5 s</option>
+                        <option value="10000">Auto-release after 10 s</option>
+                        <option value="60000">Auto-release after 60 s</option>
+                        <option value="0">Never release (hold torque)</option>
+                    </select>
+                </div>
                 <span class="box-sub" id="driverHint">Coils release after the idle window</span>
             </div>
 
@@ -1184,14 +1192,30 @@ async function pollActiveMotor() {
         }
 
         const driverHintEl = document.getElementById("driverHint");
+        const idleSelectEl = document.getElementById("idleModeSelect");
+
         if (driverHintEl) {
             const idleMs = Number(s.idle_hold_ms);
+            const released = String(s.driver || "").toUpperCase() === "OFF";
+
             if (!Number.isFinite(idleMs)) {
                 driverHintEl.textContent = "Coils release after the idle window";
             } else if (idleMs > 0) {
-                driverHintEl.textContent = `Coils release after ${(idleMs / 1000).toFixed(1)} s idle`;
+                let text = `Coils release after ${(idleMs / 1000).toFixed(1)} s idle`;
+                if (released) {
+                    text += " — no holding torque, the axis can be moved by hand. Press Home after moving it manually.";
+                }
+                driverHintEl.textContent = text;
             } else {
-                driverHintEl.textContent = "Idle release disabled — coils stay energised";
+                driverHintEl.textContent = "Never releases — holding torque kept (warmer at rest)";
+            }
+        }
+
+        if (idleSelectEl) {
+            const idleMs = Number(s.idle_hold_ms);
+            const values = Array.from(idleSelectEl.options).map(o => o.value);
+            if (Number.isFinite(idleMs) && values.includes(String(idleMs))) {
+                idleSelectEl.value = String(idleMs);
             }
         }
     } catch (e) {}
@@ -1232,6 +1256,34 @@ function runAction(actionName, friendlyMsg) {
             await pollActiveMotor();
         } catch (e) {
             toast("Command could not be sent", "err");
+        }
+    });
+}
+
+function applyIdleMode() {
+    const select = document.getElementById("idleModeSelect");
+    if (!select) return;
+
+    const value = select.value;
+    const targetMotor = activeMotor;
+
+    return enqueueMotorCommand(async () => {
+        try {
+            const { data } = await api(`/api/motor/${targetMotor}/command`, {
+                method: "POST",
+                body: { command: `SET_IDLE_MS,${value}` }
+            });
+            if (data.ok) {
+                const label = Number(value) === 0
+                    ? "Coils stay energised (holding torque, saved to EEPROM)"
+                    : `Coils release after ${(Number(value) / 1000).toFixed(1)} s idle (saved to EEPROM)`;
+                toast(label, "ok");
+            } else {
+                toast(data.error || "Motor is disconnected", "err");
+            }
+            await pollActiveMotor();
+        } catch (e) {
+            toast("Could not change the driver idle mode", "err");
         }
     });
 }
