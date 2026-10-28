@@ -9,6 +9,40 @@
 #define STEP_PIN    9
 
 
+// ================= DRIVER ENABLE POLARITY =========
+// A4988 / DRV8825 / TMC2208 / TMC2209 breakout boards energise the
+// motor coils while ENABLE is pulled LOW.
+//   EN_ACTIVE_LEVEL   -> coils ON  (motor is driven / held)
+//   EN_INACTIVE_LEVEL -> coils OFF (driver and motor cool down)
+
+#define EN_ACTIVE_LEVEL     LOW
+#define EN_INACTIVE_LEVEL   HIGH
+
+
+// ================= THERMAL PROTECTION =============
+// Root cause of the "stepper heats up after a while" complaint:
+// the old firmware switched the driver ON in setup() and never switched
+// it OFF again (only E-STOP did). The coils therefore stayed at full
+// holding current forever and both motor and driver slowly warmed up.
+//
+// The driver is now released automatically once the axis has been idle
+// for IDLE_HOLD_MS. Set it to 0 to keep the old always-energised
+// behaviour (e.g. a vertical axis that must hold itself).
+//
+// Note: while released there is no holding torque, so a load may drop.
+
+#ifndef IDLE_HOLD_MS
+#define IDLE_HOLD_MS        1500UL
+#endif
+
+// Highest value accepted by the SET_IDLE_MS serial command (10 min)
+#define IDLE_HOLD_MS_MAX    600000UL
+
+// Settle time after re-energising, before the first step pulse is sent.
+// Prevents a lost first step while the driver charge pump spins up.
+#define ENABLE_SETTLE_US    1500
+
+
 // ================= HOME LIMIT SWITCH ==============
 
 #define HOME_PIN    2
@@ -78,7 +112,7 @@
 
 // ================= FIRMWARE ========================
 
-#define FIRMWARE_VERSION "2.1.0"
+#define FIRMWARE_VERSION "2.2.0"
 
 
 #endif

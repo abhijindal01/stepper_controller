@@ -15,6 +15,7 @@ extern long forwardLimit;
 extern long backwardLimit;
 
 extern bool homed;
+extern bool moving;
 extern MachineState state;
 
 
@@ -64,7 +65,9 @@ void processSerial()
             return;
         }
 
-        digitalWrite(EN_PIN, LOW);
+        // The first homing step energises the coils; any operator
+        // hold-torque override stays in place.
+        driverEnable();
         wipeState();
         resetHomingOffset();
         state = FAST_HOMING;
@@ -85,7 +88,7 @@ void processSerial()
             return;
         }
 
-        digitalWrite(EN_PIN, LOW);
+        driverEnable();
         state = MOVING_FORWARD;
 
         Serial.println("FORWARD START");
@@ -104,7 +107,7 @@ void processSerial()
             return;
         }
 
-        digitalWrite(EN_PIN, LOW);
+        driverEnable();
         state = MOVING_BACKWARD;
 
         Serial.println("BACKWARD START");
@@ -123,8 +126,12 @@ void processSerial()
             return;
         }
 
-        digitalWrite(EN_PIN, LOW);
+        // Stop moving but keep the coils energised for the normal hold
+        // window. They are released automatically once idle, so the
+        // motor cannot sit at full holding current and cook.
+        // A deliberate HOLD override survives a STOP.
         state = READY;
+        moving = false;
         saveState(false);
 
         Serial.println("STOPPED");
@@ -137,7 +144,8 @@ void processSerial()
 
     if (cmd == "ESTOP")
     {
-        digitalWrite(EN_PIN, HIGH);
+        holdDriver(false);
+        driverDisable();
         saveState(false);
         state = ESTOPPED;
 
@@ -199,6 +207,69 @@ void processSerial()
     }
 
     // ===========================
+    // DRIVER COILS OFF (COOL DOWN NOW)
+    // ===========================
+
+    if (cmd == "DRIVER_OFF" || cmd == "RELEASE")
+    {
+        holdDriver(false);
+        driverDisable();
+
+        Serial.println("DRIVER OFF");
+        return;
+    }
+
+    // ===========================
+    // DRIVER COILS ON (HOLD TORQUE)
+    // Keeps the motor energised while idle, e.g. for a vertical axis.
+    // This intentionally disables the idle heat protection until the
+    // next move, DRIVER_OFF or E-STOP.
+    // ===========================
+
+    if (cmd == "DRIVER_ON" || cmd == "HOLD")
+    {
+        if (digitalRead(ESTOP_PIN) == ESTOP_TRIGGER || state == ESTOPPED)
+        {
+            Serial.println("EMERGENCY STOP ACTIVE");
+            return;
+        }
+
+        holdDriver(true);
+
+        Serial.println("DRIVER ON");
+        return;
+    }
+
+    // ===========================
+    // SET IDLE RELEASE TIME
+    // Example: SET_IDLE_MS,3000  (0 = never release)
+    // ===========================
+
+    if (cmd.startsWith("SET_IDLE_MS"))
+    {
+        int c1 = cmd.indexOf(',');
+
+        if (c1 < 0)
+        {
+            Serial.println("ERROR: INVALID SET_IDLE_MS FORMAT");
+            return;
+        }
+
+        long value = cmd.substring(c1 + 1).toInt();
+
+        if (value < 0)
+        {
+            value = 0;
+        }
+
+        setDriverIdleHold((unsigned long)value);
+
+        Serial.print("IDLE_MS:");
+        Serial.println(driverIdleHoldMs());
+        return;
+    }
+
+    // ===========================
     // LOAD PROJECT LIMITS
     // Example: LOAD_LIMITS,32902,-5000
     // ===========================
@@ -238,7 +309,7 @@ void processSerial()
             return;
         }
 
-        digitalWrite(EN_PIN, LOW);
+        driverEnable();
         long value = cmd.substring(3).toInt();
         jog(value);
         return;

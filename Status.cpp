@@ -4,6 +4,8 @@
 #include "State.h"
 #include "Status.h"
 
+#include "Motion.h"
+
 
 extern long currentPosition;
 
@@ -278,7 +280,74 @@ else
 }
 
 
-Serial.println("\"}");
+Serial.print("\",");
+
+
+
+// =========================
+// DRIVER / THERMAL STATE
+// =========================
+
+
+Serial.print("\"driver\":\"");
+
+
+if(driverIsEnabled())
+{
+    Serial.print("ON");
+}
+else
+{
+    Serial.print("OFF");
+}
+
+
+
+Serial.print("\",");
+
+
+
+
+Serial.print("\"hold\":");
+
+
+if(driverHoldOverride())
+{
+    Serial.print("true");
+}
+else
+{
+    Serial.print("false");
+}
+
+
+
+Serial.print(",");
+
+
+
+
+Serial.print("\"idle_ms\":");
+
+
+Serial.print(driverIdleMillis());
+
+
+
+Serial.print(",");
+
+
+
+
+Serial.print("\"idle_hold_ms\":");
+
+
+Serial.print(driverIdleHoldMs());
+
+
+
+
+Serial.println("}");
 
 
 

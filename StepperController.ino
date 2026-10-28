@@ -58,8 +58,15 @@ void setup()
     pinMode(FORWARD_SWITCH, INPUT_PULLUP);
     pinMode(BACKWARD_SWITCH, INPUT_PULLUP);
 
-    // Enable stepper driver
-    digitalWrite(EN_PIN, LOW);
+    // Keep the driver released at boot. The coils are energised on the
+    // first step (homing or move), so an idle machine never sits at full
+    // holding current and heats up.
+    holdDriver(false);
+    driverDisable();
+
+    Serial.print("DRIVER IDLE RELEASE: ");
+    Serial.print(IDLE_HOLD_MS);
+    Serial.println(" ms");
 
     loadEEPROM();
 
@@ -122,6 +129,8 @@ void loop()
             break;
     }
 
+    serviceDriverIdle();
+
     updatePositionBackup();
 }
 
@@ -136,7 +145,8 @@ void checkEmergencyStop()
     {
         Serial.println("EMERGENCY STOP");
 
-        digitalWrite(EN_PIN, HIGH);
+        holdDriver(false);
+        driverDisable();
 
         saveState(false);
 
