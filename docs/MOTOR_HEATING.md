@@ -97,7 +97,21 @@ bash tests/check_firmware.sh     # 74 host-side firmware checks
 python3 tests/test_server.py     # Flask API checks
 ```
 
-On the bench:
+On the bench, the quickest check is the read-only board probe (stop the
+service first, it holds the serial ports):
+
+```bash
+sudo systemctl stop stepper_controller
+python3 tools/check_boards.py            # both /dev/stepper_a and /dev/stepper_b
+sudo systemctl start stepper_controller
+```
+
+It prints each board's position, limits, `driver` state, idle timings, and
+flags a board that still runs pre-2.2.0 firmware (exit code 1). A board that is
+energised far past the release window while `READY` is reported as a fault; an
+intentional **Hold Torque** override is reported but not treated as one.
+
+Manual checks:
 
 1. `STATUS` while idle → `"driver":"OFF"`, growing `"idle_ms"`.
 2. Send `FORWARD`, wait for it to stop → `"driver":"ON"`, then `"OFF"` after
