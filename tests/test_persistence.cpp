@@ -593,6 +593,42 @@ int main()
     loop();
     check(!driverIsEnabled() && !driverHoldOverride(), "DRIVER_OFF clears the hold");
 
+    // This is the reported "hot once it reaches the position" case: the
+    // axis is already on the limit, so a move command cannot step and
+    // must not re-energise the coils.
+    currentPosition = forwardLimit;
+    Serial.feed("JOG 1");
+    loop();
+    check(!driverIsEnabled(), "a jog against the limit leaves the coils released");
+    check(state == READY, "the axis stays READY when it is already on the limit");
+
+    Serial.feed("FORWARD");
+    loop();
+    check(!driverIsEnabled(), "FORWARD at the limit leaves the coils released");
+
+    // ... while a move that really steps still energises them
+    currentPosition = 0;
+    Serial.feed("JOG 1");
+    loop();
+    check(driverIsEnabled(), "a jog that can move energises the coils");
+    check(currentPosition == 1, "the jog actually stepped one step");
+
+    Serial.feed("STOP");
+    loop();
+    driverDisable();
+
+    // Physical toggle held down while the axis already sits on the limit
+    currentPosition = forwardLimit;
+    g_pinState[FORWARD_SWITCH] = LOW;
+    loop();
+    loop();
+    check(!driverIsEnabled(), "the manual switch at the limit leaves the coils released");
+    check(state == READY, "the manual switch does not restart a blocked move");
+
+    g_pinState[FORWARD_SWITCH] = HIGH;
+    loop();
+    currentPosition = 0;
+
 
     // ================================================
     // E-STOP ALWAYS WINS

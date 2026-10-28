@@ -67,7 +67,6 @@ void processSerial()
 
         // The first homing step energises the coils; any operator
         // hold-torque override stays in place.
-        driverEnable();
         wipeState();
         resetHomingOffset();
         state = FAST_HOMING;
@@ -88,7 +87,6 @@ void processSerial()
             return;
         }
 
-        driverEnable();
         state = MOVING_FORWARD;
 
         Serial.println("FORWARD START");
@@ -107,7 +105,6 @@ void processSerial()
             return;
         }
 
-        driverEnable();
         state = MOVING_BACKWARD;
 
         Serial.println("BACKWARD START");
@@ -309,7 +306,8 @@ void processSerial()
             return;
         }
 
-        driverEnable();
+        // No driverEnable() here: if the axis already sits on the limit
+        // no step happens, and the coils must stay released (no heat).
         long value = cmd.substring(3).toInt();
         jog(value);
         return;

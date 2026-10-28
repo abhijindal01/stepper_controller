@@ -48,6 +48,9 @@ thermal equilibrium — the "it heats after some time" behaviour.
    machine returns to `READY`, then the watchdog releases them and prints
    `DRIVER RELEASED (IDLE)`.
 5. E-stop: coils released immediately and stay released.
+6. Commands never energise the coils by themselves — only a real step does.
+   Pressing/holding a move against an end position (already on the limit)
+   therefore leaves the driver released instead of baking at the stop.
 
 > **Holding torque:** while released there is no holding torque. A horizontal
 > lead-screw stage is normally fine. For a vertical/gantry axis that must hold
@@ -90,7 +93,7 @@ moving for a while:
 ## Verifying the fix
 
 ```bash
-bash tests/check_firmware.sh     # 58 host-side firmware checks
+bash tests/check_firmware.sh     # 74 host-side firmware checks
 python3 tests/test_server.py     # Flask API checks
 ```
 
