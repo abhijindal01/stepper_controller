@@ -424,6 +424,8 @@ ACTIONS = {
     "clear_limits": "CLEAR_LIMITS",
     "save_position": "SAVE_POSITION",
     "reset_state": "RESET_STATE",
+    "driver_off": "DRIVER_OFF",
+    "driver_on": "DRIVER_ON",
 }
 
 

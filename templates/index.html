@@ -844,6 +844,19 @@ input:focus {
             </div>
 
             <div class="sub-group">
+                <p class="sub-group-title">Driver Power / Heat Control</p>
+                <div class="grid-2">
+                    <button type="button" class="btn btn-sm" onclick="runAction('driver_off', 'Driver released — motor cooling')">
+                        Release (Cool)
+                    </button>
+                    <button type="button" class="btn btn-sm" onclick="runAction('driver_on', 'Driver holding — coils energised')">
+                        Hold Torque
+                    </button>
+                </div>
+                <span class="box-sub" id="driverHint">Coils release after the idle window</span>
+            </div>
+
+            <div class="sub-group">
                 <p class="sub-group-title">Arduino Reboot Memory &amp; Connection</p>
                 <div class="grid-3">
                     <button type="button" class="btn btn-sm" onclick="runAction('save_position', 'Position saved to Arduino EEPROM')">
@@ -862,6 +875,7 @@ input:focus {
                     <span class="meta-pill" id="diagHomed">Homed: --</span>
                     <span class="meta-pill" id="diagHomeSw">Home SW: --</span>
                     <span class="meta-pill" id="diagEstop">E-Stop: --</span>
+                    <span class="meta-pill" id="diagDriver">Driver: --</span>
                 </div>
             </div>
         </section>
@@ -1152,6 +1166,34 @@ async function pollActiveMotor() {
         const estopEl = document.getElementById("diagEstop");
         estopEl.textContent = `E-Stop: ${s.emergency || "--"}`;
         estopEl.className = "meta-pill " + (s.emergency === "ON" ? "bad" : "");
+
+        // Driver heating protection: OFF means the coils are released and
+        // the motor/driver are cooling. ON means holding current is flowing.
+        const driverEl = document.getElementById("diagDriver");
+        if (driverEl) {
+            if (s.driver === undefined) {
+                driverEl.textContent = "Driver: --";
+                driverEl.className = "meta-pill";
+            } else if (String(s.driver).toUpperCase() === "ON") {
+                driverEl.textContent = `Driver: ON${s.hold ? " (hold)" : ""}`;
+                driverEl.className = "meta-pill warn";
+            } else {
+                driverEl.textContent = "Driver: OFF";
+                driverEl.className = "meta-pill ok";
+            }
+        }
+
+        const driverHintEl = document.getElementById("driverHint");
+        if (driverHintEl) {
+            const idleMs = Number(s.idle_hold_ms);
+            if (!Number.isFinite(idleMs)) {
+                driverHintEl.textContent = "Coils release after the idle window";
+            } else if (idleMs > 0) {
+                driverHintEl.textContent = `Coils release after ${(idleMs / 1000).toFixed(1)} s idle`;
+            } else {
+                driverHintEl.textContent = "Idle release disabled — coils stay energised";
+            }
+        }
     } catch (e) {}
 }
 
@@ -1176,8 +1218,11 @@ function runAction(actionName, friendlyMsg) {
                 method: "POST"
             });
             if (data.ok) {
-                if (data.response && data.response.toUpperCase().includes("UNKNOWN COMMAND")) {
+                const reply = String(data.response || "").toUpperCase();
+                if (reply.includes("UNKNOWN COMMAND")) {
                     toast("Upload updated firmware (.ino) to Arduino for this command", "err");
+                } else if (reply.includes("EMERGENCY STOP ACTIVE")) {
+                    toast("E-stop is active — command refused", "err");
                 } else {
                     toast(friendlyMsg, actionName === "estop" ? "err" : "ok");
                 }

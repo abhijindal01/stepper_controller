@@ -2,6 +2,29 @@
 #define MOTION_H
 
 
+// ==================================================
+// STEPPER DRIVER POWER CONTROL
+// ==================================================
+
+void driverEnable();
+
+void driverDisable();
+
+bool driverIsEnabled();
+
+bool driverHoldOverride();
+
+void holdDriver(bool keepEnergised);
+
+void setDriverIdleHold(unsigned long ms);
+
+unsigned long driverIdleHoldMs();
+
+unsigned long driverIdleMillis();
+
+void serviceDriverIdle();
+
+
 void stepMotor(int speed);
 
 

@@ -34,33 +34,51 @@ void delayMicroseconds(unsigned long us)
 }
 
 
-void pinMode(int pin, int mode)
-{
-    (void)pin;
-    (void)mode;
-}
-
-
-void digitalWrite(int pin, int value)
-{
-    (void)pin;
-    (void)value;
-}
-
-
-// Tests can drive the pins through this array.
+// Tests can drive the INPUT pins through this array.
 // Default 0 (LOW) - set the idle/pressed levels you need before
 // calling setup()/loop().
 
 int g_pinState[64] = {0};
 
 
-int digitalRead(int pin)
+// Output pins remember their mode and the level last written to them,
+// so a test can prove what the firmware really drives - for example
+// that the driver ENABLE pin is inactive while the machine idles.
+
+int g_pinMode[64] = {INPUT};
+
+int g_pinOutput[64] = {LOW};
+
+
+void pinMode(int pin, int mode)
 {
     if (pin >= 0 && pin < 64)
     {
-        return g_pinState[pin];
+        g_pinMode[pin] = mode;
+    }
+}
+
+
+void digitalWrite(int pin, int value)
+{
+    if (pin >= 0 && pin < 64)
+    {
+        g_pinOutput[pin] = value ? HIGH : LOW;
+    }
+}
+
+
+int digitalRead(int pin)
+{
+    if (pin < 0 || pin >= 64)
+    {
+        return LOW;
     }
 
-    return LOW;
+    if (g_pinMode[pin] == OUTPUT)
+    {
+        return g_pinOutput[pin];
+    }
+
+    return g_pinState[pin];
 }

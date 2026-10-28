@@ -26,6 +26,9 @@ class FakeSerialArduino:
         self.homed = True
         self.forward = 85000
         self.backward = -85000
+        self.driver = "OFF"
+        self.hold = False
+        self.idle_hold_ms = 1500
         self._rx_lines: list[bytes] = []
         self.commands_seen: list[str] = []
 
@@ -61,6 +64,10 @@ class FakeSerialArduino:
                 "forward_switch": "OFF",
                 "backward_switch": "OFF",
                 "emergency": "OFF",
+                "driver": self.driver,
+                "hold": self.hold,
+                "idle_ms": 900,
+                "idle_hold_ms": self.idle_hold_ms,
             }
             self._rx_lines.append((json.dumps(doc) + "\n").encode("utf-8"))
         elif cmd == "GET_POSITION":
@@ -101,6 +108,14 @@ class FakeSerialArduino:
         elif cmd == "STOP":
             self.state = "READY"
             self._rx_lines.append(b"STOPPED\n")
+        elif cmd == "DRIVER_OFF":
+            self.driver = "OFF"
+            self.hold = False
+            self._rx_lines.append(b"DRIVER OFF\n")
+        elif cmd == "DRIVER_ON":
+            self.driver = "ON"
+            self.hold = True
+            self._rx_lines.append(b"DRIVER ON\n")
         elif cmd == "HOME":
             self.position = 0
             self.homed = True
@@ -178,6 +193,12 @@ class FourBoxSingleMotorConsoleTests(unittest.TestCase):
         self.assertNotIn("Hardware Monitor", html)
         self.assertNotIn("TEST BUZZER", html)
 
+        # Driver power / heat control is exposed
+        self.assertIn('id="diagDriver"', html)
+        self.assertIn("driver_off", html)
+        self.assertIn("driver_on", html)
+        self.assertIn("Driver Power / Heat Control", html)
+
     def test_estop_stops_cleanly_without_locking_motor(self):
         self._login()
         r = self.client.post("/api/motor/motor1/action/estop").get_json()
@@ -188,6 +209,27 @@ class FourBoxSingleMotorConsoleTests(unittest.TestCase):
         # Subsequent move works immediately
         r_fwd = self.client.post("/api/motor/motor1/action/jog_forward").get_json()
         self.assertTrue(r_fwd["ok"])
+
+    def test_driver_heat_control_actions(self):
+        self._login()
+
+        status = self.client.get("/api/motor/motor1/status").get_json()
+        self.assertEqual(status["driver"], "OFF")
+        self.assertEqual(status["idle_hold_ms"], 1500)
+
+        r_hold = self.client.post("/api/motor/motor1/action/driver_on").get_json()
+        self.assertTrue(r_hold["ok"])
+        self.assertEqual(r_hold["command"], "DRIVER_ON")
+        self.assertEqual(self.fake_a.driver, "ON")
+
+        status = self.client.get("/api/motor/motor1/status").get_json()
+        self.assertEqual(status["driver"], "ON")
+        self.assertTrue(status["hold"])
+
+        r_release = self.client.post("/api/motor/motor1/action/driver_off").get_json()
+        self.assertTrue(r_release["ok"])
+        self.assertEqual(r_release["command"], "DRIVER_OFF")
+        self.assertEqual(self.fake_a.driver, "OFF")
 
     def test_duplicate_symlink_guard(self):
         with tempfile.TemporaryDirectory() as d:
