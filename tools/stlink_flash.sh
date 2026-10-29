@@ -22,6 +22,7 @@
 # Environment overrides:
 #   STLINK_SPEED            first SWD kHz             (default 50)
 #   STLINK_FAST_SPEED       kHz after a good sector   (default 200, 0 = never)
+#   STLINK_MIN_SPEED        slowest kHz tried         (default 12)
 #   STLINK_WORKAREA         forced loader RAM address (default: auto)
 #   STLINK_WORKAREA_SIZE    loader RAM size           (default 0x10000)
 #   STLINK_RESET_HALT       1 = halt out of reset     (default 1)
@@ -32,8 +33,8 @@
 #   STLINK_RUN_AFTER        1 = `reset run` at end    (default 1)
 #   OPENOCD                 openocd binary            (default openocd)
 #
-# Exit codes: 0 ok, 1 usage/file error, 2 no writable work area,
-#             3 flash/verify failed, 4 target could not be halted.
+# Exit codes: 0 ok, 1 usage/file error, 2 no writable work area or unhealthy
+#             link, 3 flash/verify failed or link lost, 4 target would not halt.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CFG="${ROOT}/openocd_fixture.cfg"
@@ -93,6 +94,7 @@ def _flag(name, default=True):
 OPENOCD = _env("OPENOCD", "openocd")
 SPEED = int(_env("STLINK_SPEED", "50"), 0)
 FAST_SPEED = int(_env("STLINK_FAST_SPEED", "200"), 0)
+MIN_SPEED = int(_env("STLINK_MIN_SPEED", "12"), 0)
 WA_SIZE = int(_env("STLINK_WORKAREA_SIZE", "0x10000"), 0)
 FORCED_WA = _env("STLINK_WORKAREA", "")
 RESET_HALT = _flag("STLINK_RESET_HALT", True)
@@ -216,17 +218,34 @@ def stage_of(text: str) -> str | None:
     return found[-1] if found else None
 
 
+def ap_errors(text: str) -> bool:
+    """True when core debug registers (0xE0001000-0xE00FFFFF) fail to answer.
+
+    Those writes go through the same AP as everything else, so a failure there
+    is a link/AP problem, not a halt or flash problem: the log usually looks
+    like `Failed to write memory at 0xe0002010` (FPB) or
+    `Execution of event examine-end failed`.
+    """
+    low = text.lower()
+    if re.search(r"failed to (?:write|read) memory at 0xe0[0-9a-f]{5}", low):
+        return True
+    return "examine-end failed" in low
+
+
 def kind_of(text: str) -> str:
     """Failure kind from a session log."""
     low = text.lower()
-    if "FLASH_EVENT halt_failed" in text:
-        return "halt"
+    if "ctlr/stat" in low or "force reconnect" in low or "init mode failed" in low:
+        return "swd"
+    if "FLASH_EVENT halt_failed" in text or "target not halted" in low:
+        # halt failed *because* the debug registers stopped answering?
+        return "ap" if ap_errors(text) else "halt"
+    if ap_errors(text):
+        return "ap"
     if "erase time-out" in low or "failed erasing" in low or "erase_address" in low and "error" in low:
         return "erase"
     if "flash write algorithm" in low or "writing to address 0x52" in low or "lock of flash" in low:
         return "write"
-    if "ctlr/stat" in low or "force reconnect" in low or "init mode failed" in low:
-        return "swd"
     for m in re.finditer(r"failed to (?:write|read) memory at (0x[0-9a-f]+)", low):
         addr = int(m.group(1), 16)
         for lo, hi in RAM_RANGES:
@@ -245,12 +264,20 @@ def explain(kind: str) -> str:
             "target did not halt - the core kept running (erratum 3092511 / "
             "app not stopped by `halt`), so nothing was erased"
         ),
+        "ap": (
+            "core debug registers (0xE0001000+) do not answer - SWD link or "
+            "AP is failing, so the target can neither be examined nor halted; "
+            "nothing was erased"
+        ),
         "erase": (
             "flash erase failed - usually the target reset itself mid-erase "
             "(independent watchdog or brownout)"
         ),
         "write": "flash write failed inside the loader algorithm",
-        "swd": "SWD link was lost - pogo contact, target power or SWCLK/SWDIO",
+        "swd": (
+            "SWD link was lost or never came up - pogo contact, target power "
+            "or SWCLK/SWDIO"
+        ),
         "ram": (
             "flash-loader RAM is unreachable over SWD (work area) - the target "
             "is probably not halted, or SWD contact is broken"
@@ -282,6 +309,19 @@ def ram_usable(phys: int, size: int, speed: int) -> tuple[bool, str]:
     return (f"{pat_lo:08x}" in low and f"{pat_hi:08x}" in low), text
 
 
+def link_unhealthy(kind: str, text: str, tries: int) -> "SystemExit":
+    """Build the failure for a link that will not carry AP transactions."""
+    sys.stderr.write(text)
+    sys.stderr.write(
+        f"FLASH_FAILED {kind}: SWD link unhealthy ({tries} failures in a row) - "
+        f"{explain(kind)}\n"
+        "    nothing was erased.\n"
+        "    triage: tools/stlink_soak.sh (count good connects), then re-seat "
+        "contact, check GND/SWCLK/SWDIO and target power\n"
+    )
+    return SystemExit(2)
+
+
 def pick_work_area(speed: int) -> tuple[int, int, str]:
     if FORCED_WA:
         phys = int(FORCED_WA, 0)
@@ -300,16 +340,37 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
     for label, phys, usable in CANDIDATES:
         if usable < WA_SIZE:
             continue
-        ok, text = ram_usable(phys, usable, speed)
-        if ok:
-            print(f"work area {label} @ {phys:#x} - RAM check ok", flush=True)
-            return phys, WA_SIZE, label
-        failures.append(f"    {label} @ {phys:#x}: {explain(kind_of(text))}")
-        print(
-            f"work area {label} @ {phys:#x} - RAM check FAILED "
-            f"({explain(kind_of(text))})",
-            flush=True,
-        )
+
+        # A region that answers once on a flaky link is not evidence of
+        # anything, so each candidate must pass twice when the first try
+        # failed for link reasons (SWD loss / dead AP).
+        for try_no in (1, 2):
+            ok, text = ram_usable(phys, usable, speed)
+            if ok:
+                print(f"work area {label} @ {phys:#x} - RAM check ok", flush=True)
+                return phys, WA_SIZE, label
+
+            kind = kind_of(text)
+            if kind in ("swd", "ap"):
+                print(
+                    f"work area {label} @ {phys:#x} - RAM check FAILED "
+                    f"({explain(kind)})",
+                    flush=True,
+                )
+                if try_no == 2:
+                    # Probing further RAM is pointless: the bus itself is dying,
+                    # so stop instead of "succeeding" on a luckier address.
+                    raise link_unhealthy(kind, text, 2)
+                time.sleep(0.5)
+                continue
+
+            failures.append(f"    {label} @ {phys:#x}: {explain(kind)}")
+            print(
+                f"work area {label} @ {phys:#x} - RAM check FAILED "
+                f"({explain(kind)})",
+                flush=True,
+            )
+            break
 
     sys.stderr.write("no writable work area for the flash loader:\n")
     for line in failures:
@@ -389,16 +450,20 @@ def halt_target(speed: int) -> str:
         return "halt-retry"
 
     kind = kind_of(last)
-    if kind in ("halt", "unknown"):
+    if kind == "unknown":
         kind = "halt"
+    # 3 = the link (or the debug port behind it) is broken, 4 = the target
+    # refuses to stop. Both mean nothing was erased.
+    exit_code = 4 if kind == "halt" else 3
     sys.stderr.write(last)
     sys.stderr.write(
         f"FLASH_FAILED {kind}: target could not be halted - {explain(kind)}\n"
         "    nothing was erased.\n"
-        "    next steps: seat contact again, power-cycle the pad (jog away and "
-        "back), then retry; keep SWD short and slow (STLINK_SPEED=25)\n"
+        "    triage: tools/stlink_soak.sh (count good connects), then re-seat "
+        "contact, power-cycle the pad (jog away and back) and retry at "
+        "STLINK_SPEED=25\n"
     )
-    raise SystemExit(4)
+    raise SystemExit(exit_code)
 
 
 # ---------------------------------------------------------------------- flashing
@@ -519,8 +584,16 @@ try:
                     wa_phys, wa_size, wa_label = pick_work_area(speed)
                 except SystemExit:
                     pass
-            elif kind in ("erase", "write", "unknown") and speed > 25:
-                speed = max(25, speed // 2)
+            elif kind == "ap":
+                # Debug-register writes failing: try slower before blaming the
+                # harness, then stop rather than erase on a sick link.
+                if speed > MIN_SPEED:
+                    speed = max(MIN_SPEED, speed // 2)
+                    print(f"    lowering adapter speed to {speed} kHz", flush=True)
+                else:
+                    time.sleep(min(5.0, 1.5 * attempt))
+            elif kind in ("erase", "write", "unknown") and speed > MIN_SPEED:
+                speed = max(MIN_SPEED, speed // 2)
                 print(f"    lowering adapter speed to {speed} kHz", flush=True)
             else:
                 time.sleep(1.0)

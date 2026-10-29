@@ -62,12 +62,76 @@ Knobs (environment):
 | `STLINK_WORKAREA_SIZE` | `0x10000` | Loader RAM size |
 | `STLINK_ATTEMPTS` | `3` | Attempts per sector |
 | `STLINK_FAST_SPEED` | `200` | kHz climbed to after a sector verifies (`0` = stay slow) |
+| `STLINK_MIN_SPEED` | `12` | Slowest kHz the ladder drops to on operand errors |
 | `STLINK_RESET_HALT` | `1` | Halt out of reset before erasing (see below) |
 | `STLINK_HALT_TRIES` | `4` | Halt attempts before giving up |
 | `STLINK_RUN_AFTER` | `1` | `reset run` once the image verifies |
 | `STLINK_OPENOCD_TIMEOUT` | `300` | Per-OpenOCD-session timeout (s) |
 | `STLINK_FULL_VERIFY` | `1` | Second whole-image verify pass (`0` = per-sector only) |
 | `STLINK_FLASH_TIMEOUT` | `1800` | Server-side (`stlink.py`) ceiling for the whole flash (s) |
+
+### First: is the SWD link healthy?
+
+Reproduced on the fixture: connects alternate between success and
+`init mode failed (unable to connect to the target)` **at the same 3.28 V**,
+RAM probes fail with `SWD link was lost`, and OpenOCD cannot finish examining
+the target:
+
+```text
+Error: Failed to write memory at 0xe0002004
+Error: [stm32h7x.cpu0] Execution of event examine-end failed:
+Error: Failed to read memory at 0xe00e4004
+```
+
+Those are **core debug registers** (FPB `0xE0002000+`, DWT `0xE0001000+`),
+reached through the same AP as everything else: a failure there is a
+link/harness problem, not a flash problem. `Target voltage: 3.28 V` is only the
+ST-LINK's VTREF sense, and `contact_ready` only proves the *motor* reached its
+limit - neither says the pogo pins carry SWCLK/SWDIO/GND cleanly.
+
+Measure it instead of guessing:
+
+```bash
+tools/stlink_soak.sh              # 20 sessions, needs >= 90 %
+tools/stlink_soak.sh 50 --min 95  # stricter
+STLINK_SPEED=25 tools/stlink_soak.sh
+```
+
+Each session counts only if OpenOCD connects, examines the target, writes an
+FPB register, halts and reads `DHCSR.S_HALT` back:
+
+```text
+link soak: 20 sessions @ 50 kHz, threshold 90 %
+  1/20  ok
+  2/20  FAIL (connect)
+pass rate: 18/20 = 90 % in 62.0s
+failures: connect=2
+LINK_OK: link is healthy enough to flash
+```
+
+Exit `0` = healthy, `1` = below threshold (`LINK_UNHEALTHY`, with a per-kind
+triage list), `2` = cannot run. In the dashboard: **Link Check (20)**; the
+Full Sequence runs it first and stops if the link is marginal. Server side:
+`POST /api/stlink/soak` with optional `{"count": 20, "min_pct": 90}`.
+
+The flash wrapper applies the same rule: if a work-area probe fails for link
+reasons (`SWD link lost`, dead AP), it retries that region once and then
+aborts with `FLASH_FAILED swd: SWD link unhealthy` - it no longer "succeeds"
+on a luckier RAM address after the bus has already dropped.
+
+Harness fixes, in order of payoff:
+
+1. **GND return** - second and/or shorter GND pogo; a single thin ground
+   through a moving fixture produces exactly these AP failures.
+2. **Contact resistance** - check pogo springs, no series resistor >100 Ω on
+   SWCLK/SWDIO, clean pads.
+3. **Target power** - bench supply to the pad, 100 nF at the pogo; check the
+   rail under load, not the ST-LINK sense pin.
+4. **ST-LINK on a powered hub** - clone V2 dongles that re-enumerate after a
+   target reset give the alternating connect/fail pattern
+   (`dmesg -T | grep -i -E "usb|stlink"`).
+5. **Steppers de-energised** while flashing (holding current shares the
+   ground).
 
 ### Flash loader work area: AXI SRAM, not DTCM
 
@@ -171,12 +235,16 @@ the rest of the image with it.
 | `erase time-out or operation error sector 0` | target reset itself mid-erase (IWDG/brownout) | re-seat, power-cycle the pad, retry (`STLINK_SPEED=25`) |
 | `Fail reading CTRL/STAT register. Force reconnect` | SWD link lost (chip reset / contact) | re-seat contact, power-cycle |
 | `init mode failed (unable to connect to the target)` | chip in fault/lockup loop, or no contact | run the manual recovery above |
+| `Failed to write/read memory at 0xE000xxxx`, `Execution of event examine-end failed` | core debug registers unreachable: link/AP failing | run `tools/stlink_soak.sh`; fix GND return / contact / target power |
+| `FLASH_FAILED swd: SWD link unhealthy` | link died during the work-area probe | same as above - do not retry the flash |
 | `no writable RAM for the flash loader` | no halt + no reachable RAM | re-seat, power-cycle, retry |
 
 Exit codes / markers from the wrapper: `0` ok (`FLASH_OK ...`),
 `1` usage or image-range error, `2` no writable work area (`FLASH_FAILED ram: ...`),
-`3` flash/verify failed (`FLASH_FAILED erase|write|verify|swd: ...`),
-`4` target could not be halted (`FLASH_FAILED halt: ...`, nothing erased).
+`3` flash/verify failed or the link died (`FLASH_FAILED
+erase|write|verify|swd|ap: ...`), `4` target would not halt (`FLASH_FAILED
+halt: ...`). In every failure case nothing is erased unless a halt was
+confirmed.
 
 Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. After verify:
 
@@ -191,6 +259,7 @@ Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. Aft
 | 2 | ST-LINK missing / OpenOCD cannot open adapter |
 | 3 | Adapter up, VTarget present, SWD connect failed (contact / wiring / chip) |
 | 4 | Flash/verify failed |
+| 3 | SWD link lost, or core debug registers dead (AP) |
 | 4 | Target would not halt / erase timed out (nothing erased) |
 | 5 | No writable RAM for the flash loader (see above) |
 
@@ -326,7 +395,8 @@ select H7 → HOME if needed → jog forward (contact)
 | `tools/stlink_flash.sh` | Program + verify (no hard reset dependency) |
 | `tools/stlink_run.sh` | Soft resume after program |
 | `tools/openocd_fixture.cfg` | Shared Tcl preamble (iface/transport/reset/target + AXI SRAM work area) |
-| `tests/stubs/openocd` | Fake OpenOCD; lets `tests/check_scripts.sh` exercise the flash wrapper |
+| `tools/stlink_soak.sh` | Link-health soak (N connects; exit 1 when marginal) |
+| `tests/stubs/openocd` | Fake OpenOCD; lets `tests/check_scripts.sh` exercise the flash wrapper and soak |
 | `tests/test_stlink.py` | Classifier unit tests (DTCM fault + FLASH_OK logs) |
 | `firmware/indi_h743/README.md` | Where to place BL / app / combined |
 

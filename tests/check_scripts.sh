@@ -106,6 +106,9 @@ done
 #   STUB_HALT_FAIL=1            halt / reset halt never stick (running app)
 #   STUB_ERASE_FAIL=1           erase times out (target resets mid-erase)
 #   STUB_DROP_AFTER=erase       target falls off SWD after the erase
+#   STUB_AP_FAIL=1              core debug registers (0xE0001xxx+) dead
+#   STUB_DROP_ON_RAM=1          link dies during the work-area probe
+#   STUB_LINK_PATTERN=10        every second session cannot connect
 #
 printf '\nFlash wrapper (stubbed openocd)\n'
 
@@ -249,8 +252,79 @@ run_flash "target dropping off SWD is reported" 3 STUB_DROP_AFTER=erase \
     STLINK_ATTEMPTS=2 STLINK_HALT_TRIES=1
 expect_log "loss of SWD says swd" "FLASH_FAILED swd"
 
-run_flash "no SWD contact is reported" 4 STUB_SWD_FAIL=1 STLINK_HALT_TRIES=1
+run_flash "no SWD contact is reported" 3 STUB_SWD_FAIL=1 STLINK_HALT_TRIES=1
 expect_log "no SWD reports swd" "FLASH_FAILED swd"
+
+# ------------------------------------------------- debug registers (AP) faults
+run_flash "dead core debug registers are reported" 3 STUB_AP_FAIL=1
+expect_log "AP failure is named as ap" "FLASH_FAILED ap"
+expect_log "AP failure mentions debug registers" "debug registers"
+reject_log "nothing is erased with a dead AP" "erased address"
+
+# --------------------------------------------- link health measured, not guessed
+run_flash "link dying in the RAM probe aborts" 2 STUB_DROP_ON_RAM=1
+expect_log "unhealthy link is reported" "SWD link unhealthy"
+expect_log "unhealthy link points at the soak tool" "stlink_soak.sh"
+reject_log "no RAM region is accepted on a dying link" "RAM check ok"
+
+# ------------------------------------------------------------- soak tool
+if bash "$ROOT/tools/stlink_soak.sh" --help >/dev/null 2>&1; then
+    pass "stlink_soak.sh --help"
+else
+    fail "stlink_soak.sh --help"
+fi
+
+rm -f "$TMP_FLASH/sessions"
+SOAK_OUT="$(env PATH="$HERE/stubs:$PATH" STUB_STATE_FILE="$TMP_FLASH/sessions" \
+    STLINK_SOAK_GAP=0 bash "$ROOT/tools/stlink_soak.sh" 4 --min 90 2>&1)"
+SOAK_RC=$?
+if [ "$SOAK_RC" = "0" ] && printf '%s' "$SOAK_OUT" | grep -q "LINK_OK"; then
+    pass "soak passes on a healthy link"
+else
+    fail "soak passes on a healthy link (exit $SOAK_RC)"
+    printf '%s\n' "$SOAK_OUT" | tail -10
+fi
+if printf '%s' "$SOAK_OUT" | grep -q "4/4 = 100 %"; then
+    pass "soak reports the pass rate"
+else
+    fail "soak reports the pass rate"
+fi
+
+rm -f "$TMP_FLASH/sessions"
+SOAK_OUT="$(env PATH="$HERE/stubs:$PATH" STUB_STATE_FILE="$TMP_FLASH/sessions" \
+    STUB_LINK_PATTERN=10 STLINK_SOAK_GAP=0 \
+    bash "$ROOT/tools/stlink_soak.sh" 4 --min 90 2>&1)"
+SOAK_RC=$?
+if [ "$SOAK_RC" != "0" ]; then
+    pass "soak fails on a flaky link (exit $SOAK_RC)"
+else
+    fail "soak fails on a flaky link (exit 0)"
+fi
+if printf '%s' "$SOAK_OUT" | grep -qi "unhealthy\|marginal"; then
+    pass "soak explains a flaky link"
+else
+    fail "soak explains a flaky link"
+fi
+if printf '%s' "$SOAK_OUT" | grep -q "connect x2"; then
+    pass "soak classifies connect failures"
+else
+    fail "soak classifies connect failures"
+    printf '%s\n' "$SOAK_OUT" | tail -12
+fi
+
+# ------------------------------------------------------ speed ladder goes slow
+run_flash "erase failure walks the speed ladder down" 3 STUB_ERASE_FAIL=1 \
+    STLINK_ATTEMPTS=4
+if grep -q "lowering adapter speed to 25 kHz" "$TMP_FLASH/last.log"; then
+    pass "ladder reaches 25 kHz"
+else
+    fail "ladder reaches 25 kHz"
+fi
+if grep -q "lowering adapter speed to 12 kHz" "$TMP_FLASH/last.log"; then
+    pass "ladder reaches the 12 kHz floor"
+else
+    fail "ladder reaches the 12 kHz floor"
+fi
 
 # --------------------------------------------------------------- guard rails
 OUT="$(env PATH="$HERE/stubs:$PATH" bash "$ROOT/tools/stlink_flash.sh" \

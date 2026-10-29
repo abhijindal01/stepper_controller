@@ -704,6 +704,27 @@ def stlink_flash_image():
     return jsonify(stlink.flash(resolved, base=base))
 
 
+@app.route("/api/stlink/soak", methods=["POST"])
+@app.route("/stlink/soak", methods=["POST"])
+@login_required
+def stlink_soak():
+    """Measure SWD link health (N connects) before flashing.
+
+    Optional body: {"count": 20, "min_pct": 90}
+    """
+    data = request.get_json(silent=True) or {}
+    try:
+        count = int(data.get("count") or 0) or None
+        min_pct = data.get("min_pct")
+        min_pct = None if min_pct in (None, "") else float(min_pct)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "state": "bad_request",
+                        "error": "count/min_pct must be numbers"}), 400
+
+    result = stlink.soak(count=count, min_pct=min_pct)
+    return jsonify(result)
+
+
 @app.route("/api/stlink/run", methods=["POST"])
 @app.route("/stlink/run", methods=["POST"])
 @login_required

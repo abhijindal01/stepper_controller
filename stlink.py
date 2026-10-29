@@ -166,9 +166,9 @@ FLASH_FAILURE_KINDS = {
     "halt": (
         4,
         "halt_fail",
-        "The target would not halt (erratum 3092511 / running app), so the "
-        "erase timed out or was skipped. Re-seat contact, power-cycle the pad, "
-        "then retry at a lower STLINK_SPEED.",
+        "The target would not halt (erratum 3092511 / running app), so nothing "
+        "was erased. Re-seat contact, power-cycle the pad, then retry at a "
+        "lower STLINK_SPEED.",
     ),
     "erase": (
         4,
@@ -191,7 +191,16 @@ FLASH_FAILURE_KINDS = {
     "swd": (
         3,
         "swd_lost",
-        "SWD link lost - check pogo contact, target power, SWCLK/SWDIO.",
+        "SWD link lost or never came up - check pogo contact, target power, "
+        "SWCLK/SWDIO, then run tools/stlink_soak.sh.",
+    ),
+    "ap": (
+        3,
+        "ap_fail",
+        "Core debug registers (0xE0001000+) do not answer, so the target can "
+        "neither be examined nor halted. That is a link/harness problem (GND "
+        "return, contact resistance, target power) - run tools/stlink_soak.sh "
+        "before retrying.",
     ),
     "ram": (
         5,
@@ -265,6 +274,10 @@ def _classify_openocd(stdout: str, stderr: str, returncode: int) -> dict:
 
     if hinted:
         pass  # FLASH_FAILED marker already decided code/state/hint
+    elif re.search(r"failed to (?:write|read) memory at 0xe0[0-9a-f]{5}", low) or (
+        "examine-end failed" in low
+    ):
+        code, state, hint = FLASH_FAILURE_KINDS["ap"]
     elif (
         "FLASH_EVENT halt_failed" in text
         or "target not halted" in low
@@ -418,6 +431,59 @@ def flash(image: Path, base: str | None = None, timeout: float | None = None) ->
     return result
 
 
+SOAK_N = int(os.environ.get("STLINK_SOAK_N") or 20)
+SOAK_MIN_PCT = float(os.environ.get("STLINK_SOAK_MIN_PCT") or 90)
+
+
+def soak(count: int | None = None, min_pct: float | None = None,
+         timeout: float | None = None) -> dict:
+    """Open N OpenOCD sessions and report how many got a usable target.
+
+    A marginal link (pogo contact, GND return, target power, ST-LINK USB) is
+    behind most flash failures on this fixture, and it is not something a
+    flash retry can fix - so measure it first.
+    """
+    count = int(count or SOAK_N)
+    min_pct = SOAK_MIN_PCT if min_pct is None else float(min_pct)
+    # ~3 s per session upper bound, plus slack.
+    timeout = timeout if timeout is not None else max(120.0, count * 20.0)
+
+    run = run_openocd_script("stlink_soak.sh", args=[str(count), "--min", str(min_pct)],
+                             timeout=timeout)
+    log = run.get("log") or ""
+    passed = attempts = None
+    m = re.search(r"pass rate:\s*(\d+)/(\d+)\s*=\s*([0-9.]+)\s*%", log)
+    if m:
+        passed, attempts = int(m.group(1)), int(m.group(2))
+        rate = float(m.group(3))
+    else:
+        rate = None
+
+    failures: dict[str, int] = {}
+    for k, v in re.findall(r"(\w+)=(\d+)", log):
+        if k != "ok":
+            failures[k] = int(v)
+
+    healthy = bool(passed is not None and rate is not None and rate >= min_pct)
+    return {
+        "ok": healthy,
+        "code": 0 if healthy else 1,
+        "state": "link_ok" if healthy else "link_unhealthy",
+        "attempts": attempts if attempts is not None else count,
+        "passed": passed,
+        "pass_rate": rate,
+        "min_pass_rate": min_pct,
+        "failures": failures,
+        "hint": (
+            None
+            if healthy
+            else "SWD link is marginal - fix the harness (GND return, pogo "
+            "contact, target power, ST-LINK USB) before flashing again"
+        ),
+        "log": log[-8000:],
+    }
+
+
 def soft_run(timeout: float = 20) -> dict:
     return run_openocd_script("stlink_run.sh", timeout=timeout)
 
@@ -439,5 +505,6 @@ def quick_status() -> dict:
             "work_area": f"0x{WORK_AREA:08X} (AXI SRAM)",
             "work_area_size": f"0x{WORK_AREA_SIZE:08X}",
             "halt": "reset halt (SYSRESETREQ + vector catch)",
+            "soak": f"{SOAK_N} sessions, needs {SOAK_MIN_PCT:.0f} %",
         },
     }
