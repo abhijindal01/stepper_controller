@@ -19,6 +19,12 @@ Environment:
   STUB_ERASE_FAIL=1  `flash erase_address` times out (watchdog reset)
   STUB_DROP_AFTER    `halt`|`erase`|`write`: target drops off SWD afterwards
                      ("Fail reading CTRL/STAT register"), permanently
+  STUB_DROP_ON_RAM=1 the link dies on the first RAM write (work-area probe)
+  STUB_AP_FAIL=1     core debug registers (0xE0001000-0xE00FFFFF, except
+                     DHCSR) refuse reads/writes, like a dying AP
+  STUB_LINK_PATTERN  per-session link health, e.g. "101" = every second
+                     session fails at init (counter kept in STUB_STATE_FILE)
+  STUB_STATE_FILE    where that session counter lives (default /tmp file)
   STUB_OPENOCD_LOG   append each simulated session to this file
 """
 
@@ -50,7 +56,15 @@ fault_bases = [
     int(p, 0) for p in (os.environ.get("STUB_RAM_FAULT") or "").split(",") if p.strip()
 ]
 
+BANNER = [
+    "Info : STLINK V2J46S7 (API v2) VID:PID 0483:3748",
+    "Info : Target voltage: 3.280000",
+    "Info : SWD DPIDR 0x6ba02477",
+    "Info : [stm32h7x.cpu0] Examination succeed",
+]
+
 state = {
+    "banner": False,
     "halted": False,
     "work_area": 0x20000000,   # OpenOCD default for stm32h7x.cfg
     "dropped": False,
@@ -77,6 +91,38 @@ def broken(addr: int) -> bool:
     return any(base <= addr < base + 0x10000 for base in fault_bases)
 
 
+RAM_WINDOWS = (
+    (0x20000000, 0x20020000),
+    (0x24000000, 0x24080000),
+    (0x30000000, 0x30048000),
+    (0x38000000, 0x38010000),
+)
+
+
+def ap_fault(addr: int) -> bool:
+    """Core debug registers stop answering when STUB_AP_FAIL=1."""
+    if os.environ.get("STUB_AP_FAIL") != "1":
+        return False
+    if addr == 0xE000EDF0:  # DHCSR stays readable: tests want a specific mode
+        return False
+    return 0xE0001000 <= addr < 0xE00FFFFF
+
+
+def show_banner() -> None:
+    if state["banner"]:
+        return
+    for line in BANNER:
+        emit(line)
+    state["banner"] = True
+    if os.environ.get("STUB_AP_FAIL") == "1":
+        # FPB/DWT writes are how OpenOCD finishes examining the target.
+        emit("Error: Failed to write memory at 0xe0002004", sys.stderr)
+        emit(
+            "Error: [stm32h7x.cpu0] Execution of event examine-end failed:",
+            sys.stderr,
+        )
+
+
 def drop_if_requested(after: str) -> None:
     if (os.environ.get("STUB_DROP_AFTER") or "").strip().lower() == after:
         state["dropped"] = True
@@ -101,6 +147,9 @@ def split_statements(line: str) -> list[str]:
 
 
 def do_halt() -> None:
+    if os.environ.get("STUB_AP_FAIL") == "1":
+        emit("Error: Failed to write memory at 0xe0002010", sys.stderr)
+        raise SystemExit(1)
     if os.environ.get("STUB_HALT_FAIL") == "1":
         # erratum-style: halt does not stick, the core keeps running
         emit(
@@ -114,6 +163,10 @@ def do_halt() -> None:
 
 
 def do_reset_halt() -> None:
+    if os.environ.get("STUB_AP_FAIL") == "1":
+        emit("Error: Failed to write memory at 0xe0002010", sys.stderr)
+        emit("Error: [stm32h7x.cpu0] target not halted", sys.stderr)
+        raise SystemExit(1)
     if os.environ.get("STUB_HALT_FAIL") == "1":
         emit(
             "Warn : [stm32h7x.cpu0] target was in unknown state when halt was requested",
@@ -168,7 +221,10 @@ def do_statement(stmt: str) -> None:
     if re.search(r"\bhalt\b", stmt):
         do_halt()
         return
-    if "adapter speed" in stmt or stmt in ("init", "exit"):
+    if stmt == "init":
+        show_banner()
+        return
+    if "adapter speed" in stmt or stmt == "exit":
         return
 
     m = re.search(r"configure -work-area-phys (0x[0-9a-fA-F]+)", stmt)
@@ -179,14 +235,23 @@ def do_statement(stmt: str) -> None:
     m = re.search(r"mww (0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+)$", stmt)
     if m:
         addr, value = int(m.group(1), 16), int(m.group(2), 16)
+        if ap_fault(addr):
+            fail(f"Error: Failed to write memory at 0x{addr:08x}")
         if broken(addr):
             fail(f"Error: Failed to write memory at 0x{addr:08x}")
         state["mem"][addr] = value
+        if os.environ.get("STUB_DROP_ON_RAM") == "1" and any(
+            lo <= addr < hi for lo, hi in RAM_WINDOWS
+        ):
+            state["dropped"] = True
+            emit("Error: Fail reading CTRL/STAT register. Force reconnect", sys.stderr)
         return
 
     m = re.search(r"mdw (0x[0-9a-fA-F]+)$", stmt)
     if m:
         addr = int(m.group(1), 16)
+        if ap_fault(addr):
+            fail(f"Error: Failed to read memory at 0x{addr:08x}")
         if state["dropped"]:
             fail("Error: Failed to read memory and, additionally, failed to find out where")
         if broken(addr):
@@ -247,7 +312,22 @@ def do_statement(stmt: str) -> None:
     # Unknown statement: ignore, like an unused Tcl setup line
 
 
-if os.environ.get("STUB_SWD_FAIL") == "1":
+pattern = (os.environ.get("STUB_LINK_PATTERN") or "").strip()
+pattern_fail = False
+if pattern:
+    state_file = os.environ.get("STUB_STATE_FILE") or "/tmp/stub_openocd_sessions"
+    try:
+        with open(state_file, encoding="utf-8") as fh:
+            index = int(fh.read().strip() or "0")
+    except (OSError, ValueError):
+        index = 0
+    with open(state_file, "w", encoding="utf-8") as fh:
+        fh.write(str(index + 1))
+    pattern_fail = pattern[index % len(pattern)] == "1"
+
+if os.environ.get("STUB_SWD_FAIL") == "1" or pattern_fail:
+    emit("Info : STLINK V2J46S7 (API v2) VID:PID 0483:3748")
+    emit("Info : Target voltage: 3.280000")
     emit("Error: init mode failed (unable to connect to the target)", sys.stderr)
     raise SystemExit(1)
 

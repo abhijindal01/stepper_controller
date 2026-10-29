@@ -66,6 +66,29 @@ Error: Fail reading CTRL/STAT register. Force reconnect
 FLASH_FAILED swd: sector 0 @ 0x8000000 - SWD link was lost
 """
 
+# Third field failure: SWD transactions into core debug registers fail, so the
+# target can be neither examined nor halted. Note there is no halt/erase here.
+AP_FAIL_LOG = STLINK_BANNER + """\
+adapter speed 50 kHz
+0xe000edf0: 00000003
+Error: Failed to write memory at 0xe0002004
+Error: [stm32h7x.cpu0] Execution of event examine-end failed:
+Error: Failed to write memory at 0xe0002010
+FLASH_EVENT halt_failed TARGET: stm32h7x.cpu0 - Not halted
+FLASH_FAILED ap: target could not be halted - core debug registers dead
+    nothing was erased.
+"""
+
+# Link that dies during the work-area probe: no RAM region may be "accepted".
+LINK_UNHEALTHY_LOG = STLINK_BANNER + """\
+target halted out of reset
+work area AXI SRAM (D1) @ 0x24000000 - RAM check FAILED (SWD link was lost)
+work area SRAM1 (D2) @ 0x30000000 - RAM check FAILED (SWD link was lost)
+Error: Fail reading CTRL/STAT register. Force reconnect
+FLASH_FAILED swd: SWD link unhealthy (2 failures in a row) - SWD link lost
+    nothing was erased.
+"""
+
 FLASH_OK_LOG = STLINK_BANNER + """\
 flashing arducopter_with_bl.hex: 1645996 bytes @ 0x8000000 in 13 sector(s)
 work area AXI SRAM (D1) 0x24000000 - RAM check ok
@@ -124,6 +147,53 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(r["state"], "swd_lost")
         self.assertEqual(r["code"], 3)
 
+    def test_ap_failure_is_named(self):
+        r = self.classify(AP_FAIL_LOG)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["state"], "ap_fail")
+        self.assertEqual(r["code"], 3)
+        self.assertIn("debug registers", r["hint"])
+        self.assertIn("soak", r["hint"])
+
+    def test_ap_failure_without_marker(self):
+        r = self.classify(
+            STLINK_BANNER
+            + "Error: Failed to write memory at 0xe0002014\n"
+            + "Error: Failed to read memory at 0xe00e4004\n"
+        )
+        self.assertEqual(r["state"], "ap_fail")
+
+    def test_unhealthy_link_is_named(self):
+        r = self.classify(LINK_UNHEALTHY_LOG)
+        self.assertEqual(r["state"], "swd_lost")
+        self.assertEqual(r["code"], 3)
+
+    def test_flash_never_reports_ok_on_failure(self):
+        # Even if the wrapper exited 0, a FLASH_FAILED log must not be "ok".
+        orig = stlink.run_openocd_script
+        stlink.run_openocd_script = lambda *a, **k: {
+            "ok": True, "code": 0, "state": "ok", "log": LINK_UNHEALTHY_LOG,
+        }
+        try:
+            r = stlink.flash(Path("arducopter_with_bl.hex"))
+        finally:
+            stlink.run_openocd_script = orig
+        self.assertFalse(r["ok"])
+        self.assertNotEqual(r["state"], "ok")
+
+    def test_flash_reports_ok_on_flash_ok(self):
+        orig = stlink.run_openocd_script
+        stlink.run_openocd_script = lambda *a, **k: {
+            "ok": False, "code": 4, "state": "flash_fail", "log": FLASH_OK_LOG,
+        }
+        try:
+            r = stlink.flash(Path("arducopter_with_bl.hex"))
+        finally:
+            stlink.run_openocd_script = orig
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["state"], "ok")
+        self.assertTrue(r["verified"])
+
     def test_no_writable_ram(self):
         text = STLINK_BANNER + "no writable RAM for the flash loader\nFLASH_FAILED ...\n"
         r = self.classify(text)
@@ -151,6 +221,44 @@ class ClassifierTest(unittest.TestCase):
     def test_probe_ok(self):
         r = self.classify(STLINK_BANNER + "PROBE_OK\n", rc=0)
         self.assertTrue(r["ok"])
+
+    def test_soak_healthy(self):
+        log = (
+            "link soak: 4 sessions @ 50 kHz, threshold 90 %\n"
+            "  1/4  ok\n  2/4  ok\n  3/4  ok\n  4/4  ok\n"
+            "pass rate: 4/4 = 100 % in 1.0s\n"
+            "LINK_OK: link is healthy enough to flash\n"
+        )
+        orig = stlink.run_openocd_script
+        stlink.run_openocd_script = lambda *a, **k: {"ok": True, "log": log}
+        try:
+            r = stlink.soak(count=4)
+        finally:
+            stlink.run_openocd_script = orig
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["state"], "link_ok")
+        self.assertEqual((r["passed"], r["attempts"]), (4, 4))
+        self.assertEqual(r["pass_rate"], 100.0)
+
+    def test_soak_unhealthy(self):
+        log = (
+            "link soak: 4 sessions @ 50 kHz, threshold 90 %\n"
+            "  1/4  FAIL (connect)\n  2/4  ok\n  3/4  FAIL (connect)\n"
+            "  4/4  FAIL (ap)\n"
+            "pass rate: 1/4 = 25 % in 1.0s\n"
+            "failures: ap=1, connect=2\n"
+            "LINK_UNHEALTHY: the SWD link is marginal - do not flash yet\n"
+        )
+        orig = stlink.run_openocd_script
+        stlink.run_openocd_script = lambda *a, **k: {"ok": False, "log": log}
+        try:
+            r = stlink.soak(count=4)
+        finally:
+            stlink.run_openocd_script = orig
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["state"], "link_unhealthy")
+        self.assertEqual(r["failures"], {"ap": 1, "connect": 2})
+        self.assertIn("harness", r["hint"])
 
     def test_work_area_defaults_are_axi_sram(self):
         status = stlink.quick_status()

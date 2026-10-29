@@ -927,8 +927,13 @@ input:focus {
             </div>
 
             <div class="grid-2">
+                <button type="button" class="btn btn-sm" onclick="stlinkSoak()">Link Check (20)</button>
                 <button type="button" class="btn btn-sm" onclick="stlinkSoftRun()">Soft Run</button>
-                <button type="button" class="btn btn-sm" onclick="stlinkPowerCycle()">Power Cycle</button>
+            </div>
+
+            <div>
+                <button type="button" class="btn btn-sm" style="width:100%"
+                        onclick="stlinkPowerCycle()">Power Cycle</button>
             </div>
 
             <button type="button" class="btn btn-sm btn-blue" onclick="stlinkFullSequence()">
@@ -1570,6 +1575,23 @@ async function stlinkFlash() {
     return data;
 }
 
+async function stlinkSoak() {
+    const swd = document.getElementById("stlinkSwdPill");
+    swd.textContent = "SWD: Link Check…";
+    swd.className = "meta-pill warn";
+    logStlink("Link check: opening 20 OpenOCD sessions…");
+    const { data } = await api("/api/stlink/soak", { method: "POST", body: {} });
+    logStlink(data.log || JSON.stringify(data));
+    const ok = Boolean(data.ok);
+    swd.textContent = "SWD: " + (ok
+        ? `Link OK (${data.passed}/${data.attempts})`
+        : `Link Bad (${data.passed ?? "?"}/${data.attempts ?? "?"})`);
+    swd.className = "meta-pill " + (ok ? "ok" : "bad");
+    if (!ok && data.hint) logStlink("Hint: " + data.hint);
+    toast(ok ? "SWD link healthy" : "SWD link marginal - see hint", ok ? "ok" : "err");
+    return data;
+}
+
 async function stlinkSoftRun() {
     const { data } = await api("/api/stlink/run", { method: "POST", body: {} });
     logStlink(data.log || JSON.stringify(data));
@@ -1593,6 +1615,8 @@ async function stlinkPowerCycle() {
 }
 
 async function stlinkFullSequence() {
+    const link = await stlinkSoak();
+    if (link && !link.ok) return;
     const c = await stlinkContact();
     if (!c || !c.ok) return;
     const p = await stlinkProbe();
