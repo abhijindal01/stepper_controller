@@ -29,6 +29,7 @@
 #   STLINK_HALT_TRIES       halt attempts             (default 4)
 #   STLINK_ATTEMPTS         attempts per sector       (default 3)
 #   STLINK_OPENOCD_TIMEOUT  per-session timeout s     (default 300)
+#   STLINK_CONNECT_BACKOFF  seconds before a connect retry (default 2)
 #   STLINK_FULL_VERIFY      whole-image verify pass   (default 1)
 #   STLINK_RUN_AFTER        1 = `reset run` at end    (default 1)
 #   OPENOCD                 openocd binary            (default openocd)
@@ -101,6 +102,7 @@ RESET_HALT = _flag("STLINK_RESET_HALT", True)
 HALT_TRIES = max(1, int(_env("STLINK_HALT_TRIES", "4"), 0))
 ATTEMPTS = max(1, int(_env("STLINK_ATTEMPTS", "3"), 0))
 OCD_TIMEOUT = float(_env("STLINK_OPENOCD_TIMEOUT", "300"))
+CONNECT_BACKOFF = float(_env("STLINK_CONNECT_BACKOFF", "2"))
 FULL_VERIFY = _flag("STLINK_FULL_VERIFY", True)
 RUN_AFTER = _flag("STLINK_RUN_AFTER", True)
 
@@ -384,6 +386,33 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
 
 # --------------------------------------------------------------------- halt first
 
+def _connect_error(text: str) -> bool:
+    low = text.lower()
+    return (
+        "init mode failed" in low
+        or "unable to connect" in low
+        or ("failed to" in low and "memory at 0xe0" in low)
+    )
+
+
+def run_openocd_connect(commands: list[str], timeout: float = OCD_TIMEOUT) -> tuple[int, str]:
+    """run_openocd, but retry a failed *connect* with backoff.
+
+    These failures are transient - the same command succeeds seconds later on
+    this fixture - so hammering the same session without a pause is pointless.
+    """
+    delays = [0.0, CONNECT_BACKOFF, min(5.0, CONNECT_BACKOFF * 2)]
+    rc, text = 1, ""
+    for delay in delays:
+        if delay:
+            time.sleep(delay)
+        rc, text = run_openocd(commands, timeout=timeout)
+        if not _connect_error(text):
+            return rc, text
+        print("    connect failed - retrying", flush=True)
+    return rc, text
+
+
 def halt_target(speed: int) -> str:
     """Stop the core before any erase. Returns how it was achieved.
 
@@ -402,7 +431,7 @@ def halt_target(speed: int) -> str:
                 f"mdw {DHCSR:#x}",
                 "exit",
             ]
-            rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
+            rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 90))
             last = text
             if halted(text):
                 if attempt > 1:
@@ -421,7 +450,7 @@ def halt_target(speed: int) -> str:
                 f"mdw {DHCSR:#x}",
                 "exit",
             ]
-            rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
+            rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 90))
             last = text
             if halted(text):
                 print(
@@ -443,7 +472,7 @@ def halt_target(speed: int) -> str:
         f"mdw {DHCSR:#x}",
         "exit",
     ]
-    rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
+    rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 90))
     last = text
     if halted(text):
         print("target halted after repeated halt requests (watchdog not reset)", flush=True)
@@ -455,9 +484,13 @@ def halt_target(speed: int) -> str:
     # 3 = the link (or the debug port behind it) is broken, 4 = the target
     # refuses to stop. Both mean nothing was erased.
     exit_code = 4 if kind == "halt" else 3
+    if kind in ("swd", "ap"):
+        headline = "target could not be reached"
+    else:
+        headline = "target could not be halted"
     sys.stderr.write(last)
     sys.stderr.write(
-        f"FLASH_FAILED {kind}: target could not be halted - {explain(kind)}\n"
+        f"FLASH_FAILED {kind}: {headline} - {explain(kind)}\n"
         "    nothing was erased.\n"
         "    triage: tools/stlink_soak.sh (count good connects), then re-seat "
         "contact, power-cycle the pad (jog away and back) and retry at "
@@ -548,7 +581,7 @@ try:
                 sector_commands(erase_start, erase_len, part, addr),
                 "exit",
             ]
-            rc, last_text = run_openocd(cmds)
+            rc, last_text = run_openocd_connect(cmds)
             stage = stage_of(last_text)
             ok = rc == 0 and stage == "done" and "verified" in last_text.lower()
             if ok:
@@ -632,7 +665,7 @@ try:
                 f"verify_image {whole} {flash_base:#x}",
                 "exit",
             ]
-            rc, last_text = run_openocd(cmds, timeout=OCD_TIMEOUT * 2)
+            rc, last_text = run_openocd_connect(cmds, timeout=OCD_TIMEOUT * 2)
             ok = rc == 0 and "verified" in last_text.lower() and "Error:" not in last_text
             if ok:
                 break
@@ -654,7 +687,7 @@ try:
         print("Verified OK (per-sector)", flush=True)
 
     if RUN_AFTER:
-        rc, text = run_openocd(
+        rc, text = run_openocd_connect(
             [f"init; adapter speed {speed}", "reset run", 'echo "FLASH_RUN"', "exit"],
             timeout=min(OCD_TIMEOUT, 120),
         )

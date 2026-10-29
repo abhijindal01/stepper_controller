@@ -22,6 +22,8 @@ Environment:
   STUB_DROP_ON_RAM=1 the link dies on the first RAM write (work-area probe)
   STUB_AP_FAIL=1     core debug registers (0xE0001000-0xE00FFFFF, except
                      DHCSR) refuse reads/writes, like a dying AP
+  STUB_SPEED_MAX     connect only succeeds at adapter speeds <= this kHz
+                     (emulates a marginal link that needs a slow clock)
   STUB_LINK_PATTERN  per-session link health, e.g. "101" = every second
                      session fails at init (counter kept in STUB_STATE_FILE)
   STUB_STATE_FILE    where that session counter lives (default /tmp file)
@@ -65,6 +67,7 @@ BANNER = [
 
 state = {
     "banner": False,
+    "speed": 1000,
     "halted": False,
     "work_area": 0x20000000,   # OpenOCD default for stm32h7x.cfg
     "dropped": False,
@@ -224,7 +227,17 @@ def do_statement(stmt: str) -> None:
     if stmt == "init":
         show_banner()
         return
-    if "adapter speed" in stmt or stmt == "exit":
+    if stmt == "exit":
+        return
+    m = re.search(r"adapter speed (\d+)", stmt)
+    if m:
+        speed = int(m.group(1))
+        state["speed"] = speed
+        limit = (os.environ.get("STUB_SPEED_MAX") or "").strip()
+        if limit and speed > int(limit, 0):
+            emit(f"Info : clock speed {speed} kHz")
+            emit("Error: init mode failed (unable to connect to the target)", sys.stderr)
+            raise SystemExit(1)
         return
 
     m = re.search(r"configure -work-area-phys (0x[0-9a-fA-F]+)", stmt)

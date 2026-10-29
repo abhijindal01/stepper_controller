@@ -187,7 +187,7 @@ class ClassifierTest(unittest.TestCase):
             "ok": False, "code": 4, "state": "flash_fail", "log": FLASH_OK_LOG,
         }
         try:
-            r = stlink.flash(Path("arducopter_with_bl.hex"))
+            r = stlink.flash(Path("arducopter_with_bl.hex"), precheck=False)
         finally:
             stlink.run_openocd_script = orig
         self.assertTrue(r["ok"])
@@ -221,6 +221,103 @@ class ClassifierTest(unittest.TestCase):
     def test_probe_ok(self):
         r = self.classify(STLINK_BANNER + "PROBE_OK\n", rc=0)
         self.assertTrue(r["ok"])
+
+    # ------------------------------------------------------------- flash gating
+    def _with_scripts(self, soak_result, flash_results):
+        """Patch soak() and run_openocd_script for flash() tests."""
+        calls = {"flash": 0}
+        orig_soak, orig_run = stlink.soak, stlink.run_openocd_script
+        stlink.soak = lambda *a, **k: dict(soak_result)
+
+        def fake_run(script, args=None, timeout=120, env=None):
+            if script == "stlink_flash.sh":
+                idx = min(calls["flash"], len(flash_results) - 1)
+                calls["flash"] += 1
+                return dict(flash_results[idx])
+            return {"ok": True, "log": ""}
+
+        stlink.run_openocd_script = fake_run
+        return calls, (orig_soak, orig_run)
+
+    @staticmethod
+    def _restore(saved):
+        stlink.soak, stlink.run_openocd_script = saved
+
+    HEALTHY_LINK = {
+        "ok": True, "state": "link_ok", "passed": 3, "attempts": 3,
+        "pass_rate": 100.0, "hint": None, "log": "pass rate: 3/3 = 100 %",
+    }
+    BAD_LINK = {
+        "ok": False, "state": "link_unhealthy", "passed": 0, "attempts": 3,
+        "pass_rate": 0.0, "failures": {"connect": 3},
+        "hint": "SWD link is marginal", "log": "pass rate: 0/3 = 0 %",
+    }
+
+    def test_flash_refuses_when_link_is_bad(self):
+        calls, saved = self._with_scripts(self.BAD_LINK, [])
+        try:
+            r = stlink.flash(Path("arducopter_with_bl.hex"), precheck=True)
+        finally:
+            self._restore(saved)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["state"], "link_unhealthy")
+        self.assertEqual(calls["flash"], 0)          # nothing was flashed
+        self.assertIn("not flashing", r["log"])
+
+    def test_flash_runs_when_link_is_healthy(self):
+        ok_run = {"ok": True, "code": 0, "state": "ok", "log": FLASH_OK_LOG}
+        calls, saved = self._with_scripts(self.HEALTHY_LINK, [ok_run])
+        try:
+            r = stlink.flash(Path("arducopter_with_bl.hex"), precheck=True)
+        finally:
+            self._restore(saved)
+        self.assertTrue(r["ok"])
+        self.assertEqual(calls["flash"], 1)
+
+    def test_transient_failure_is_retried(self):
+        bad = {"ok": False, "code": 3, "state": "swd_lost",
+               "log": "FLASH_FAILED swd: SWD link unhealthy"}
+        good = {"ok": True, "code": 0, "state": "ok", "log": FLASH_OK_LOG}
+        calls, saved = self._with_scripts(self.HEALTHY_LINK, [bad, good])
+        orig_delay = stlink.FLASH_RETRY_DELAY
+        stlink.FLASH_RETRY_DELAY = 0
+        try:
+            r = stlink.flash(Path("arducopter_with_bl.hex"), precheck=True, retries=1)
+        finally:
+            stlink.FLASH_RETRY_DELAY = orig_delay
+            self._restore(saved)
+        self.assertTrue(r["ok"])
+        self.assertEqual(calls["flash"], 2)
+        self.assertTrue(r["notes"])
+
+    def test_non_transient_failure_is_not_retried(self):
+        bad = {"ok": False, "code": 4, "state": "erase_fail",
+               "log": "FLASH_FAILED erase: flash erase failed"}
+        calls, saved = self._with_scripts(self.HEALTHY_LINK, [bad])
+        try:
+            r = stlink.flash(Path("arducopter_with_bl.hex"), precheck=True, retries=2)
+        finally:
+            self._restore(saved)
+        self.assertFalse(r["ok"])
+        self.assertEqual(calls["flash"], 1)
+
+    def test_flash_speed_is_passed_through(self):
+        seen = {}
+        orig_soak, orig_run = stlink.soak, stlink.run_openocd_script
+        stlink.soak = lambda *a, **k: dict(self.HEALTHY_LINK)
+
+        def fake_run(script, args=None, timeout=120, env=None):
+            if script == "stlink_flash.sh":
+                seen["env"] = env
+                return {"ok": True, "code": 0, "state": "ok", "log": FLASH_OK_LOG}
+            return {"ok": True, "log": ""}
+
+        stlink.run_openocd_script = fake_run
+        try:
+            stlink.flash(Path("x.bin"), speed=25, precheck=False)
+        finally:
+            self._restore((orig_soak, orig_run))
+        self.assertEqual(seen["env"], {"STLINK_SPEED": 25})
 
     def test_soak_healthy(self):
         log = (

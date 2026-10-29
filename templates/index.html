@@ -917,6 +917,12 @@ input:focus {
                         <option value="0x08000000">0x08000000 (Combined / BL)</option>
                         <option value="0x08020000">0x08020000 (App Only)</option>
                     </select>
+                    <select id="stlinkSpeed" title="SWD clock">
+                        <option value="">Speed: Auto (50 kHz)</option>
+                        <option value="50">Speed: 50 kHz</option>
+                        <option value="25">Speed: 25 kHz</option>
+                        <option value="12">Speed: 12 kHz</option>
+                    </select>
                 </div>
             </div>
 
@@ -1563,11 +1569,18 @@ async function stlinkFlash() {
     const swd = document.getElementById("stlinkSwdPill");
     swd.textContent = "SWD: Flashing…";
     swd.className = "meta-pill warn";
+    const speed = document.getElementById("stlinkSpeed")?.value || "";
     const payload = { image };
     if (base) payload.base = base;
+    if (speed) payload.speed = Number(speed);
     const { data } = await api("/api/stlink/flash", { method: "POST", body: payload });
     logStlink(data.log || JSON.stringify(data));
     const ok = Boolean(data.ok || data.verified);
+    if (!ok && data.state === "link_unhealthy") {
+        logStlink("Flash blocked: the SWD link failed the pre-check - fix the " +
+                  "harness, then run Link Check again.");
+    }
+    if (data.notes && data.notes.length) data.notes.forEach(n => logStlink("Retry: " + n));
     if (!ok && data.hint) logStlink("Hint: " + data.hint);
     swd.textContent = "SWD: " + (ok ? "Verified OK" : "Flash Failed");
     swd.className = "meta-pill " + (ok ? "ok" : "bad");

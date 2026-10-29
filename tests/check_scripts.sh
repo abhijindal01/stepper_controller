@@ -109,6 +109,7 @@ done
 #   STUB_AP_FAIL=1              core debug registers (0xE0001xxx+) dead
 #   STUB_DROP_ON_RAM=1          link dies during the work-area probe
 #   STUB_LINK_PATTERN=10        every second session cannot connect
+#   STUB_SPEED_MAX=25           only connects at <= 25 kHz
 #
 printf '\nFlash wrapper (stubbed openocd)\n'
 
@@ -266,6 +267,20 @@ run_flash "link dying in the RAM probe aborts" 2 STUB_DROP_ON_RAM=1
 expect_log "unhealthy link is reported" "SWD link unhealthy"
 expect_log "unhealthy link points at the soak tool" "stlink_soak.sh"
 reject_log "no RAM region is accepted on a dying link" "RAM check ok"
+
+# ------------------------------------------- marginal link needs a slow clock
+run_flash "too-fast SWD cannot connect" 3 STUB_SPEED_MAX=25 \
+    STLINK_CONNECT_BACKOFF=0 STLINK_HALT_TRIES=1
+expect_log "connect failure says 'could not be reached'" "could not be reached"
+reject_log "connect failure is not called a halt failure" "could not be halted"
+expect_log "connect failure retries with a pause" "connect failed - retrying"
+
+run_flash "slow SWD connects and flashes" 0 STUB_SPEED_MAX=25 STLINK_SPEED=25
+expect_log "slow path still reaches FLASH_OK" "FLASH_OK"
+
+run_flash "flaky link recovered by connect retry" 0 STUB_LINK_PATTERN=10 \
+    STLINK_CONNECT_BACKOFF=0
+expect_log "flaky link ends in FLASH_OK" "FLASH_OK"
 
 # ------------------------------------------------------------- soak tool
 if bash "$ROOT/tools/stlink_soak.sh" --help >/dev/null 2>&1; then
