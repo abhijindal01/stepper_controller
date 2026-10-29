@@ -42,24 +42,66 @@ Interpretation: ST-LINK USB + VTarget are healthy; SWD session was not establish
 
 ### Flash (once `init` succeeds)
 
-Prefer the helper script:
+Always use the helper script:
 
 ```bash
 /home/quality/stepper_controller/tools/stlink_flash.sh \
   /home/quality/stepper_controller/firmware/indi_h743/combined.bin
 ```
 
-Equivalent one-liner:
+It erases + writes one 128 KiB sector per OpenOCD session and verifies each
+sector plus the whole image. Do **not** use `program ... verify exit`: on this
+H7 + ST-LINK/V2 combo it fails mid multi-sector erase/algo load.
+
+Knobs (environment):
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `STLINK_SPEED` | `50` | SWD kHz for erase/write (auto-halves on DAP stalls) |
+| `STLINK_WORKAREA` | auto | Force the loader RAM address |
+| `STLINK_WORKAREA_SIZE` | `0x10000` | Loader RAM size |
+| `STLINK_ATTEMPTS` | `3` | Attempts per sector |
+| `STLINK_OPENOCD_TIMEOUT` | `300` | Per-OpenOCD-session timeout (s) |
+| `STLINK_FULL_VERIFY` | `1` | Second whole-image verify pass (`0` = per-sector only) |
+| `STLINK_FLASH_TIMEOUT` | `1800` | Server-side (`stlink.py`) ceiling for the whole flash (s) |
+
+### Flash loader work area: AXI SRAM, not DTCM
+
+OpenOCD's `target/stm32h7x.cfg` puts the flash-loader work area in **DTCM**
+(`-work-area-phys 0x20000000`). On this fixture SWD writes into that window
+fail, so the loader is never downloaded and sector 0 never programs — the
+erase still succeeds, which makes it look like a flash problem when it is a
+RAM/debug-access problem:
+
+```text
+erased address 0x08000000 (length 131072) in 0.898930s (142.392 KiB/s)
+Error: Failed to write memory at 0x20003994
+Error: error writing to flash at address 0x08000000 at offset 0x00000000
+flash failed at sector 0 @ 0x8000000
+```
+
+`tools/openocd_fixture.cfg` now moves the work area to **AXI SRAM**
+(`0x24000000`, 64 KiB), and `tools/stlink_flash.sh` re-checks RAM before it
+writes anything, falling back AXI SRAM → SRAM1 (D2) → SRAM4 (D3) → DTCM and
+reporting which one it used:
+
+```text
+work area AXI SRAM (D1) 0x24000000 - RAM check ok
+```
+
+Manual check on the Pi (writes 4 bytes; target is halted, power-cycle after):
 
 ```bash
-openocd \
-  -f interface/stlink.cfg \
-  -c "transport select swd" \
-  -c "adapter speed 1800" \
-  -c "reset_config none" \
-  -f target/stm32h7x.cfg \
-  -c "program /ABS/PATH/combined.bin 0x08000000 verify exit"
+openocd -f tools/openocd_fixture.cfg \
+  -c "init; adapter speed 50; halt" \
+  -c "mww 0x24000000 0x5AA5C33C; mdw 0x24000000" \
+  -c "exit"
+# expected: 0x24000000: 5aa5c33c
 ```
+
+Exit codes / markers from the wrapper: `0` ok (`FLASH_OK ...`),
+`1` usage or image-range error, `2` no writable work area (`FLASH_FAILED no
+writable RAM ...`), `3` flash/verify failed (`FLASH_FAILED sector N ...`).
 
 Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. After verify:
 
@@ -74,6 +116,7 @@ Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. Aft
 | 2 | ST-LINK missing / OpenOCD cannot open adapter |
 | 3 | Adapter up, VTarget present, SWD connect failed (contact / wiring / chip) |
 | 4 | Flash/verify failed |
+| 5 | No writable RAM for the flash loader (see above) |
 
 Parse OpenOCD stderr for: `Target voltage`, `unable to connect`, `Verified OK`.
 
@@ -206,7 +249,9 @@ select H7 → HOME if needed → jog forward (contact)
 | `tools/stlink_probe.sh` | Connect-only OpenOCD probe |
 | `tools/stlink_flash.sh` | Program + verify (no hard reset dependency) |
 | `tools/stlink_run.sh` | Soft resume after program |
-| `tools/openocd_fixture.cfg` | Shared Tcl preamble (iface/transport/reset/target) |
+| `tools/openocd_fixture.cfg` | Shared Tcl preamble (iface/transport/reset/target + AXI SRAM work area) |
+| `tests/stubs/openocd` | Fake OpenOCD; lets `tests/check_scripts.sh` exercise the flash wrapper |
+| `tests/test_stlink.py` | Classifier unit tests (DTCM fault + FLASH_OK logs) |
 | `firmware/indi_h743/README.md` | Where to place BL / app / combined |
 
 ---

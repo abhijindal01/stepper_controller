@@ -1563,6 +1563,7 @@ async function stlinkFlash() {
     const { data } = await api("/api/stlink/flash", { method: "POST", body: payload });
     logStlink(data.log || JSON.stringify(data));
     const ok = Boolean(data.ok || data.verified);
+    if (!ok && data.hint) logStlink("Hint: " + data.hint);
     swd.textContent = "SWD: " + (ok ? "Verified OK" : "Flash Failed");
     swd.className = "meta-pill " + (ok ? "ok" : "bad");
     toast(ok ? "Flash verified" : "Flash failed", ok ? "ok" : "err");

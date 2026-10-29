@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+"""Fake `openocd` for tests/check_scripts.sh.
+
+Emulates just enough of the STM32H743 + ST-LINK behaviour that
+tools/stlink_flash.sh relies on, so the flash wrapper can be exercised
+without a board:
+
+  * keeps a tiny model of RAM writes (mww) and reads (mdw)
+  * remembers the flash-loader work area (configure -work-area-phys)
+  * writes an error and exits non-zero when the work area or a mww target
+    falls inside a "broken RAM" window
+
+Environment:
+  STUB_RAM_FAULT    comma separated RAM bases (0x20000000,...); each such
+                    64 KiB window faults on read/write, like the DTCM
+                    window on the real fixture
+  STUB_SWD_FAIL=1   emulate "unable to connect to the target"
+  STUB_OPENOCD_LOG  append each simulated session to this file
+"""
+
+import os
+import re
+import sys
+
+args = sys.argv[1:]
+commands: list[str] = []
+i = 0
+while i < len(args):
+    if args[i] == "-c" and i + 1 < len(args):
+        commands.append(args[i + 1])
+        i += 2
+    else:
+        i += 1
+
+script = "\n".join(commands)
+
+log_path = os.environ.get("STUB_OPENOCD_LOG")
+if log_path:
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write("---- openocd " + " ".join(commands) + "\n")
+
+fault_bases = [
+    int(p, 0) for p in (os.environ.get("STUB_RAM_FAULT") or "").split(",") if p.strip()
+]
+
+
+def broken(addr: int) -> bool:
+    return any(base <= addr < base + 0x10000 for base in fault_bases)
+
+
+def emit(line: str, stream=sys.stdout) -> None:
+    stream.write(line + "\n")
+    stream.flush()
+
+
+if os.environ.get("STUB_SWD_FAIL") == "1":
+    emit("Error: init mode failed (unable to connect to the target)", sys.stderr)
+    raise SystemExit(1)
+
+work_area = None  # what the wrapper configured
+mem: dict[int, int] = {}
+
+
+def loader_targets() -> list[int]:
+    """Addresses a `flash write_image` would touch to load the algorithm."""
+    base = work_area if work_area is not None else 0x20000000
+    return [base, base + 0x2194, base + 0x3994]
+
+
+def fail_memory(addr: int) -> None:
+    emit(f"Error: Failed to write memory at 0x{addr:08x}", sys.stderr)
+    emit(
+        "Error: error writing to flash at address 0x08000000 at offset 0x00000000",
+        sys.stderr,
+    )
+    raise SystemExit(1)
+
+
+for raw in re.split(r"[;\n]", script):
+    line = raw.strip()
+    if not line:
+        continue
+
+    m = re.search(r"configure -work-area-phys (0x[0-9a-fA-F]+)", line)
+    if m:
+        work_area = int(m.group(1), 16)
+        continue
+
+    m = re.search(r"mww (0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+)$", line)
+    if m:
+        addr, value = int(m.group(1), 16), int(m.group(2), 16)
+        if broken(addr):
+            fail_memory(addr)
+        mem[addr] = value
+        continue
+
+    m = re.match(r"mdw (0x[0-9a-fA-F]+)$", line)
+    if m:
+        addr = int(m.group(1), 16)
+        if broken(addr):
+            emit(f"Error: Failed to read memory at 0x{addr:08x}", sys.stderr)
+            raise SystemExit(1)
+        emit(f"0x{addr:08x}: {mem.get(addr, 0):08x}")
+        continue
+
+    m = re.match(r"flash erase_address (0x[0-9a-fA-F]+) (\d+)$", line)
+    if m:
+        emit(f"erased address {m.group(1)} (length {m.group(2)}) in 0.100000s")
+        continue
+
+    m = re.match(r"flash write_image (\S+) (0x[0-9a-fA-F]+)$", line)
+    if m:
+        path = m.group(1)
+        if not os.path.isfile(path):
+            emit(f"Error: could not open {path}", sys.stderr)
+            raise SystemExit(1)
+        for addr in loader_targets():
+            if broken(addr):
+                fail_memory(addr)
+        emit(f"wrote {os.path.getsize(path)} bytes from file {path}")
+        continue
+
+    m = re.match(r"verify_image (\S+) (0x[0-9a-fA-F]+)$", line)
+    if m:
+        path = m.group(1)
+        if not os.path.isfile(path):
+            emit(f"Error: could not open {path}", sys.stderr)
+            raise SystemExit(1)
+        for addr in loader_targets():
+            if broken(addr):
+                emit(f"Error: Failed to write memory at 0x{addr:08x}", sys.stderr)
+                raise SystemExit(1)
+        emit(f"verified {os.path.getsize(path)} bytes at {m.group(2)} in 0.002000s")
+        continue
+
+raise SystemExit(0)
