@@ -33,6 +33,39 @@ Error: error writing to flash at address 0x08000000 at offset 0x00000000
 flash failed at sector 0 @ 0x8000000
 """
 
+# Second field failure: halt did not stick, so the erase timed out.
+HALT_FAIL_LOG = STLINK_BANNER + """\
+Work-area: AXI SRAM @ 0x24000000 (0x10000 bytes)
+Info : Device: STM32H74x/75x
+Info : flash size probed value 2048k
+Warn : [stm32h7x.cpu0] target was in unknown state when halt was requested
+Error: erase time-out or operation error sector 0
+Error: failed erasing sectors 0 to 0
+
+FLASH_FAILED sector 0 @ 0x8000000: unknown OpenOCD failure
+"""
+
+HALT_FAIL_MARKED = STLINK_BANNER + """\
+adapter speed 50 kHz
+cortex_m reset halt failed
+FLASH_FAILED halt: target could not be halted - target did not halt
+    nothing was erased.
+"""
+
+ERASE_FAIL_MARKED = STLINK_BANNER + """\
+  sector 0/12 @ 0x8000000 (131072 bytes, erase 128 KiB)
+    attempt 1/3 failed: failed during erase
+      Error: erase time-out or operation error sector 0
+FLASH_FAILED erase: sector 0 @ 0x8000000 - flash erase failed
+"""
+
+SWD_LOST_MARKED = STLINK_BANNER + """\
+FLASH_EVENT halt_ok
+FLASH_STAGE erase
+Error: Fail reading CTRL/STAT register. Force reconnect
+FLASH_FAILED swd: sector 0 @ 0x8000000 - SWD link was lost
+"""
+
 FLASH_OK_LOG = STLINK_BANNER + """\
 flashing arducopter_with_bl.hex: 1645996 bytes @ 0x8000000 in 13 sector(s)
 work area AXI SRAM (D1) 0x24000000 - RAM check ok
@@ -68,6 +101,28 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(r["state"], "ok")
         self.assertTrue(r["verified"])
         self.assertAlmostEqual(r["voltage"], 3.274455)
+
+    def test_halt_failure_is_not_unknown(self):
+        r = self.classify(HALT_FAIL_LOG)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["state"], "halt_fail")
+        self.assertEqual(r["code"], 4)
+        self.assertIn("halt", r["hint"].lower())
+
+    def test_halt_marker(self):
+        r = self.classify(HALT_FAIL_MARKED)
+        self.assertEqual(r["state"], "halt_fail")
+        self.assertIn("erase", r["hint"])
+
+    def test_erase_marker(self):
+        r = self.classify(ERASE_FAIL_MARKED)
+        self.assertEqual(r["state"], "erase_fail")
+        self.assertEqual(r["code"], 4)
+
+    def test_swd_lost_marker(self):
+        r = self.classify(SWD_LOST_MARKED)
+        self.assertEqual(r["state"], "swd_lost")
+        self.assertEqual(r["code"], 3)
 
     def test_no_writable_ram(self):
         text = STLINK_BANNER + "no writable RAM for the flash loader\nFLASH_FAILED ...\n"

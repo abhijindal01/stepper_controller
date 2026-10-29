@@ -1,34 +1,39 @@
 #!/bin/bash
 # Flash .bin/.hex via ST-LINK for IndiH743 (no NRST).
 #
-# OpenOCD's single `program` on this H7+ST-LINK/V2 combo fails mid multi-sector
-# erase/algo load, so this wrapper erases + writes one 128 KiB sector at a time
-# in a fresh OpenOCD session.
+# Two fixture quirks are handled here:
 #
-# It also picks a *writable* flash-loader work area before it starts. OpenOCD
-# defaults the STM32H7 work area to DTCM (0x20000000); on this fixture writes
-# into DTCM come back as
+# 1. Flash-loader RAM. OpenOCD defaults the STM32H7 work area to DTCM
+#    (0x20000000); writes there fault on this fixture ("Failed to write memory
+#    at 0x2000xxxx") and the loader is never downloaded. We probe RAM and use
+#    the first healthy region, AXI SRAM first.
 #
-#     Error: Failed to write memory at 0x20002194
-#     Error: error writing to flash at address 0x08000000 at offset 0x00000000
-#
-# which kills the flash loader, so sector 0 never programs even though the
-# erase succeeds. We probe RAM candidates (AXI SRAM first) and use the first
-# one that takes and returns a pattern.
+# 2. Halting. `halt` on a running app does not stick (erratum 3092511 leaves
+#    the core running, and the app's IWDG then resets the chip mid erase/write:
+#    "erase time-out", "Fail reading CTRL/STAT register", "unable to connect").
+#    Every sector session therefore starts with `reset halt` - SYSRESETREQ
+#    plus vector catch stops the core at the reset vector before any software
+#    runs, and that also leaves IWDG unarmed. The halt is confirmed by reading
+#    DHCSR before anything is erased; without a confirmed halt nothing is
+#    erased.
 #
 #   tools/stlink_flash.sh <image.bin|image.hex> [base_addr_for_bin]
 #
 # Environment overrides:
-#   STLINK_SPEED            SWD kHz used for erase/write   (default 50)
-#   STLINK_WORKAREA         forced loader RAM address      (default: auto)
-#   STLINK_WORKAREA_SIZE    loader RAM size                (default 0x10000)
-#   STLINK_ATTEMPTS         attempts per sector            (default 3)
-#   STLINK_OPENOCD_TIMEOUT  per-OpenOCD-session timeout s  (default 300)
-#   STLINK_FULL_VERIFY      second whole-image verify pass (default 1)
-#   OPENOCD                 openocd binary                 (default openocd)
+#   STLINK_SPEED            first SWD kHz             (default 50)
+#   STLINK_FAST_SPEED       kHz after a good sector   (default 200, 0 = never)
+#   STLINK_WORKAREA         forced loader RAM address (default: auto)
+#   STLINK_WORKAREA_SIZE    loader RAM size           (default 0x10000)
+#   STLINK_RESET_HALT       1 = halt out of reset     (default 1)
+#   STLINK_HALT_TRIES       halt attempts             (default 4)
+#   STLINK_ATTEMPTS         attempts per sector       (default 3)
+#   STLINK_OPENOCD_TIMEOUT  per-session timeout s     (default 300)
+#   STLINK_FULL_VERIFY      whole-image verify pass   (default 1)
+#   STLINK_RUN_AFTER        1 = `reset run` at end    (default 1)
+#   OPENOCD                 openocd binary            (default openocd)
 #
 # Exit codes: 0 ok, 1 usage/file error, 2 no writable work area,
-#             3 flash/verify failed.
+#             3 flash/verify failed, 4 target could not be halted.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CFG="${ROOT}/openocd_fixture.cfg"
@@ -36,7 +41,7 @@ PY="${ROOT}/../venv/bin/python3"
 [[ -x "$PY" ]] || PY=python3
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
   [[ $# -lt 1 ]] && exit 1
   exit 0
 fi
@@ -66,15 +71,36 @@ FLASH_BASE = 0x08000000
 FLASH_MAX = 2048 * 1024          # STM32H743, dual bank
 SECTOR = 128 * 1024
 
-OPENOCD = os.environ.get("OPENOCD") or "openocd"
-SPEED = int(os.environ.get("STLINK_SPEED") or "50", 0)
-WA_SIZE = int(os.environ.get("STLINK_WORKAREA_SIZE") or "0x10000", 0)
-FORCED_WA = (os.environ.get("STLINK_WORKAREA") or "").strip()
-ATTEMPTS = max(1, int(os.environ.get("STLINK_ATTEMPTS") or "3", 0))
-OCD_TIMEOUT = float(os.environ.get("STLINK_OPENOCD_TIMEOUT") or 300)
-FULL_VERIFY = (os.environ.get("STLINK_FULL_VERIFY") or "1").strip().lower() not in (
-    "0", "false", "no", "off",
-)
+DHCSR = 0xE000EDF0               # bit 17 = S_HALT
+DHCSR_S_HALT = 1 << 17
+IWDG_KR = 0x58004800
+IWDG_PR = 0x58004804
+IWDG_RLR = 0x58004808
+IWDG_SR = 0x5800480C
+
+
+def _env(name, default):
+    return (os.environ.get(name) or "").strip() or default
+
+
+def _flag(name, default=True):
+    val = (os.environ.get(name) or "").strip().lower()
+    if not val:
+        return default
+    return val not in ("0", "false", "no", "off")
+
+
+OPENOCD = _env("OPENOCD", "openocd")
+SPEED = int(_env("STLINK_SPEED", "50"), 0)
+FAST_SPEED = int(_env("STLINK_FAST_SPEED", "200"), 0)
+WA_SIZE = int(_env("STLINK_WORKAREA_SIZE", "0x10000"), 0)
+FORCED_WA = _env("STLINK_WORKAREA", "")
+RESET_HALT = _flag("STLINK_RESET_HALT", True)
+HALT_TRIES = max(1, int(_env("STLINK_HALT_TRIES", "4"), 0))
+ATTEMPTS = max(1, int(_env("STLINK_ATTEMPTS", "3"), 0))
+OCD_TIMEOUT = float(_env("STLINK_OPENOCD_TIMEOUT", "300"))
+FULL_VERIFY = _flag("STLINK_FULL_VERIFY", True)
+RUN_AFTER = _flag("STLINK_RUN_AFTER", True)
 
 # (label, phys, usable size). AXI SRAM first: it answers debug accesses on this
 # fixture, DTCM does not.
@@ -159,7 +185,7 @@ def run_openocd(commands: list[str], timeout: float = OCD_TIMEOUT) -> tuple[int,
     except FileNotFoundError:
         usage_error(f"{OPENOCD}: not found")
     except subprocess.TimeoutExpired:
-        return 124, f"TIMEOUT: openocd did not finish within {timeout:.0f}s"
+        return 124, "TIMEOUT: openocd did not finish in time"
     return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
 
 
@@ -171,30 +197,68 @@ def wa_commands(phys: int, size: int) -> list[str]:
     ]
 
 
-def ok_text(text: str) -> bool:
-    return "verified" in text.lower() and "Error:" not in text
+def dhcsr_from(text: str) -> int | None:
+    """Parse the DHCSR value out of an `mdw 0xE000EDF0` dump."""
+    m = None
+    for m in re.finditer(r"0xe000edf0:\s*([0-9a-f]{8})", text, re.I):
+        pass
+    return int(m.group(1), 16) if m else None
 
 
-def diagnose(text: str) -> str:
-    """Short human-readable reason for an OpenOCD failure."""
+def halted(text: str) -> bool:
+    value = dhcsr_from(text)
+    return value is not None and bool(value & DHCSR_S_HALT)
+
+
+def stage_of(text: str) -> str | None:
+    """Last FLASH_STAGE marker reached in an OpenOCD session."""
+    found = re.findall(r"FLASH_STAGE\s+(\w+)", text)
+    return found[-1] if found else None
+
+
+def kind_of(text: str) -> str:
+    """Failure kind from a session log."""
     low = text.lower()
+    if "FLASH_EVENT halt_failed" in text:
+        return "halt"
+    if "erase time-out" in low or "failed erasing" in low or "erase_address" in low and "error" in low:
+        return "erase"
+    if "flash write algorithm" in low or "writing to address 0x52" in low or "lock of flash" in low:
+        return "write"
+    if "ctlr/stat" in low or "force reconnect" in low or "init mode failed" in low:
+        return "swd"
     for m in re.finditer(r"failed to (?:write|read) memory at (0x[0-9a-f]+)", low):
         addr = int(m.group(1), 16)
         for lo, hi in RAM_RANGES:
             if lo <= addr < hi:
-                return (
-                    f"RAM write fault at {m.group(1)} - flash loader work area "
-                    "is not reachable over SWD"
-                )
-    if "unable to connect" in low or "init mode failed" in low:
-        return "SWD connect failed - check pogo contact, target power, SWCLK/SWDIO"
-    if "dap transaction stalled" in low or "stalled" in low:
-        return "SWD stalls at this adapter speed"
-    if "flash write algorithm aborted" in low or "flash_sr" in low:
-        return "flash controller rejected the write (FLASH_SR error)"
-    if "timeout" in low:
-        return "openocd timed out"
-    return "unknown OpenOCD failure"
+                return "ram"
+    if "verify" in low and "error" in low:
+        return "verify"
+    if "timeout" in low or "timed out" in low:
+        return "timeout"
+    return "unknown"
+
+
+def explain(kind: str) -> str:
+    return {
+        "halt": (
+            "target did not halt - the core kept running (erratum 3092511 / "
+            "app not stopped by `halt`), so nothing was erased"
+        ),
+        "erase": (
+            "flash erase failed - usually the target reset itself mid-erase "
+            "(independent watchdog or brownout)"
+        ),
+        "write": "flash write failed inside the loader algorithm",
+        "swd": "SWD link was lost - pogo contact, target power or SWCLK/SWDIO",
+        "ram": (
+            "flash-loader RAM is unreachable over SWD (work area) - the target "
+            "is probably not halted, or SWD contact is broken"
+        ),
+        "verify": "image read back different from what was written",
+        "timeout": "OpenOCD did not finish in time",
+        "unknown": "OpenOCD failed (see log)",
+    }.get(kind, "OpenOCD failed (see log)")
 
 
 # ---------------------------------------------------------------- work-area pick
@@ -225,8 +289,8 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
         if not ok:
             sys.stderr.write(text)
             sys.stderr.write(
-                f"FLASH_FAILED work area {phys:#x} (forced) is not writable: "
-                f"{diagnose(text)}\n"
+                f"FLASH_FAILED ram: work area {phys:#x} (forced) is not writable "
+                f"- {explain('ram')}\n"
             )
             raise SystemExit(2)
         print(f"work area {phys:#x} (forced) - RAM check ok", flush=True)
@@ -240,10 +304,10 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
         if ok:
             print(f"work area {label} @ {phys:#x} - RAM check ok", flush=True)
             return phys, WA_SIZE, label
-        failures.append(f"    {label} @ {phys:#x}: {diagnose(text)}")
+        failures.append(f"    {label} @ {phys:#x}: {explain(kind_of(text))}")
         print(
             f"work area {label} @ {phys:#x} - RAM check FAILED "
-            f"({diagnose(text)})",
+            f"({explain(kind_of(text))})",
             flush=True,
         )
 
@@ -251,10 +315,90 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
     for line in failures:
         sys.stderr.write(line + "\n")
     sys.stderr.write(
-        "FLASH_FAILED no writable RAM for the flash loader - target not halted "
-        "or SWD contact broken\n"
+        "FLASH_FAILED ram: no writable RAM for the flash loader - target not "
+        "halted or SWD contact broken\n"
     )
     raise SystemExit(2)
+
+
+# --------------------------------------------------------------------- halt first
+
+def halt_target(speed: int) -> str:
+    """Stop the core before any erase. Returns how it was achieved.
+
+    `reset halt` is the safe path: SYSRESETREQ plus vector catch stops the core
+    at the reset vector before any software runs, and leaves IWDG unarmed.
+    Falls back to halting a running core with the watchdog stretched, which is
+    racy (the IWDG may already be counting).
+    """
+    last = ""
+
+    if RESET_HALT:
+        for attempt in range(1, HALT_TRIES + 1):
+            cmds = [
+                f"init; adapter speed {speed}",
+                "catch {reset halt}",
+                f"mdw {DHCSR:#x}",
+                "exit",
+            ]
+            rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
+            last = text
+            if halted(text):
+                if attempt > 1:
+                    print(f"target halted out of reset (attempt {attempt})", flush=True)
+                else:
+                    print("target halted out of reset", flush=True)
+                return "reset-halt"
+
+            # A running app: stop it and stretch the IWDG before it bites.
+            cmds = [
+                f"init; adapter speed {speed}",
+                "catch {halt}",
+                f"catch {{mww {IWDG_KR:#x} 0x5555}}",
+                f"catch {{mww {IWDG_RLR:#x} 0xfff}}",
+                f"catch {{mww {IWDG_KR:#x} 0xaaaa}}",
+                f"mdw {DHCSR:#x}",
+                "exit",
+            ]
+            rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
+            last = text
+            if halted(text):
+                print(
+                    "target halted with plain halt (watchdog stretched) - "
+                    "less reliable than reset halt",
+                    flush=True,
+                )
+                return "halt"
+            time.sleep(min(4.0, 1.5 * attempt))
+
+    # Last resort: iterate `halt` without a reset, in one session.
+    cmds = [
+        f"init; adapter speed {speed}",
+        "catch {halt}",
+        "sleep 200",
+        "catch {halt}",
+        "sleep 500",
+        "catch {halt}",
+        f"mdw {DHCSR:#x}",
+        "exit",
+    ]
+    rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
+    last = text
+    if halted(text):
+        print("target halted after repeated halt requests (watchdog not reset)", flush=True)
+        return "halt-retry"
+
+    kind = kind_of(last)
+    if kind in ("halt", "unknown"):
+        kind = "halt"
+    sys.stderr.write(last)
+    sys.stderr.write(
+        f"FLASH_FAILED {kind}: target could not be halted - {explain(kind)}\n"
+        "    nothing was erased.\n"
+        "    next steps: seat contact again, power-cycle the pad (jog away and "
+        "back), then retry; keep SWD short and slow (STLINK_SPEED=25)\n"
+    )
+    raise SystemExit(4)
 
 
 # ---------------------------------------------------------------------- flashing
@@ -265,25 +409,61 @@ print(
     f"in {n_chunks} sector(s)",
     flush=True,
 )
+print(f"adapter speed {SPEED} kHz", flush=True)
 
 speed = SPEED
-print(f"adapter speed {speed} kHz", flush=True)
+# Stop the core first: without a confirmed halt nothing may be erased, and the
+# RAM probe is only meaningful once the target is under control.
+halt_mode = halt_target(speed)
 wa_phys, wa_size, wa_label = pick_work_area(speed)
 
 tmpdir = Path(tempfile.mkdtemp(prefix="stlink_flash_"))
 started = time.monotonic()
+
+
+def sector_commands(erase_start: int, erase_len: int, part: Path, addr: int) -> str:
+    """One self-contained session: halt out of reset, then erase/write/verify.
+
+    The stages only run when the halt succeeded, so a core that will not stop
+    can never be erased underneath.
+    """
+    stages = [
+        'echo "FLASH_EVENT halt_ok"',
+        'echo "FLASH_STAGE erase"',
+        f"flash erase_address {erase_start:#x} {erase_len:#x}",
+        'echo "FLASH_STAGE write"',
+        f"flash write_image {part} {addr:#x}",
+        'echo "FLASH_STAGE verify"',
+        f"verify_image {part} {addr:#x}",
+        'echo "FLASH_STAGE done"',
+    ]
+    body = "\n".join("    " + s for s in stages)
+    if not RESET_HALT:
+        return body
+    return "\n".join(
+        [
+            "set _rc [catch {reset halt} _e]",
+            "if {$_rc != 0} {",
+            '    echo "FLASH_EVENT halt_failed $_e"',
+            "} else {",
+            body,
+            "}",
+        ]
+    )
+
+
 try:
     parts: list[Path] = []
+    good_speed = speed
     for n in range(n_chunks):
         piece = image[n * SECTOR:(n + 1) * SECTOR]
-        if len(piece) % 32:
-            piece += b"\xFF" * (32 - len(piece) % 32)
+        padded = piece if len(piece) % 32 == 0 else piece + b"\xFF" * (32 - len(piece) % 32)
         part = tmpdir / f"part_{n:02d}.bin"
-        part.write_bytes(piece)
+        part.write_bytes(padded)
         parts.append(part)
 
         addr = flash_base + n * SECTOR
-        # Erase whole sectors that the chunk touches.
+        # Erase whole sectors that the chunk touches (erase works in sectors).
         erase_start = FLASH_BASE + ((addr - FLASH_BASE) // SECTOR) * SECTOR
         erase_len = (
             ((addr + len(piece) - erase_start) + SECTOR - 1) // SECTOR
@@ -295,96 +475,130 @@ try:
         )
 
         last_text = ""
+        kind = "unknown"
+        ok = False
         for attempt in range(1, ATTEMPTS + 1):
             cmds = wa_commands(wa_phys, wa_size) + [
-                f"init; adapter speed {speed}; halt",
-                f"flash erase_address {erase_start:#x} {erase_len}",
-                f"flash write_image {part} {addr:#x}",
-                f"verify_image {part} {addr:#x}",
+                f"init; adapter speed {speed}",
+                sector_commands(erase_start, erase_len, part, addr),
                 "exit",
             ]
             rc, last_text = run_openocd(cmds)
-            if rc == 0 and ok_text(last_text):
+            stage = stage_of(last_text)
+            ok = rc == 0 and stage == "done" and "verified" in last_text.lower()
+            if ok:
                 break
 
-            reason = diagnose(last_text)
-            print(f"    attempt {attempt}/{ATTEMPTS} failed: {reason}", flush=True)
+            kind = kind_of(last_text)
+            detail = (
+                f"halt not confirmed" if kind == "halt" else f"failed during {stage or 'init'}"
+            )
+            print(
+                f"    attempt {attempt}/{ATTEMPTS} failed: {detail} "
+                f"({explain(kind)})",
+                flush=True,
+            )
             for line in last_text.splitlines():
-                if "Error" in line or "Failed" in line or "Warn" in line:
+                if "Error" in line or "Failed" in line:
                     print(f"      {line}", flush=True)
 
             if attempt == ATTEMPTS:
                 break
 
-            if "work area" in reason or "RAM write fault" in reason:
-                # Re-run the RAM survey: the target may have come back in a
-                # different state, or another region may be healthy.
-                print("    re-checking work area...", flush=True)
-                FORCED_WA = ""  # let the auto-detection move off a dead region
-                wa_phys, wa_size, wa_label = pick_work_area(speed)
-            elif "stalls" in reason:
+            if kind in ("halt", "swd"):
+                # Re-halt from scratch; the chip may have been reset by its
+                # watchdog, which also means it is safe to slow SWD down.
+                time.sleep(min(5.0, 1.5 * attempt))
+                try:
+                    halt_target(speed)
+                except SystemExit:
+                    pass
+            elif kind == "ram":
+                FORCED_WA = ""
+                try:
+                    wa_phys, wa_size, wa_label = pick_work_area(speed)
+                except SystemExit:
+                    pass
+            elif kind in ("erase", "write", "unknown") and speed > 25:
                 speed = max(25, speed // 2)
                 print(f"    lowering adapter speed to {speed} kHz", flush=True)
-            time.sleep(1.0)
+            else:
+                time.sleep(1.0)
 
-        if not (rc == 0 and ok_text(last_text)):
+        if not ok:
             sys.stderr.write(last_text)
             sys.stderr.write(
-                f"FLASH_FAILED sector {n} @ {addr:#x}: {diagnose(last_text)}\n"
+                f"FLASH_FAILED {kind}: sector {n} @ {addr:#x} - {explain(kind)}\n"
             )
             raise SystemExit(3)
 
-        done = sum(p.stat().st_size for p in parts)
+        done = sum(p.stat().st_size for p in parts[:n + 1])
         elapsed = time.monotonic() - started
         rate = done / 1024 / elapsed if elapsed > 0 else 0
         print(f"    verified ({done} bytes, {rate:.0f} KiB/s)", flush=True)
 
+        # Ramp SWD up once a sector has been proven, but remember what worked.
+        good_speed = speed
+        if FAST_SPEED and speed < FAST_SPEED:
+            speed = min(FAST_SPEED, speed * 2)
+            print(f"    adapter speed -> {speed} kHz", flush=True)
+
     # Whole-image verify in one session (each sector is already verified above;
     # STLINK_FULL_VERIFY=0 skips the second pass).
-    if not FULL_VERIFY:
-        print("Verified OK (per-sector)", flush=True)
-        elapsed = time.monotonic() - started
-        print(
-            f"FLASH_OK {len(image)} bytes @ {flash_base:#x} "
-            f"work-area {wa_phys:#x} ({wa_label}) speed {speed} kHz "
-            f"in {elapsed:.1f}s",
-            flush=True,
-        )
-        raise SystemExit(0)
+    if FULL_VERIFY:
+        print("full verify...", flush=True)
+        whole = tmpdir / "whole.bin"
+        whole.write_bytes(b"".join(p.read_bytes() for p in parts))
 
-    print("full verify...", flush=True)
-    whole = tmpdir / "whole.bin"
-    padded = bytearray()
-    for part in parts:
-        padded.extend(part.read_bytes())
-    whole.write_bytes(bytes(padded))
-
-    last_text = ""
-    for attempt in range(1, ATTEMPTS + 1):
-        cmds = wa_commands(wa_phys, wa_size) + [
-            f"init; adapter speed {speed}; halt",
-            f"verify_image {whole} {flash_base:#x}",
-            "exit",
-        ]
-        rc, last_text = run_openocd(cmds, timeout=OCD_TIMEOUT * 2)
-        if rc == 0 and ok_text(last_text):
-            print("Verified OK", flush=True)
-            break
-        print(f"    verify attempt {attempt}/{ATTEMPTS} failed", flush=True)
-        for line in last_text.splitlines():
-            if "Error" in line or "Failed" in line:
-                print(f"      {line}", flush=True)
-        time.sleep(1.0)
+        last_text = ""
+        ok = False
+        for attempt in range(1, ATTEMPTS + 1):
+            cmds = wa_commands(wa_phys, wa_size) + [
+                f"init; adapter speed {speed}",
+                "catch {reset halt}",
+                f"verify_image {whole} {flash_base:#x}",
+                "exit",
+            ]
+            rc, last_text = run_openocd(cmds, timeout=OCD_TIMEOUT * 2)
+            ok = rc == 0 and "verified" in last_text.lower() and "Error:" not in last_text
+            if ok:
+                break
+            print(f"    verify attempt {attempt}/{ATTEMPTS} failed", flush=True)
+            for line in last_text.splitlines():
+                if "Error" in line or "Failed" in line:
+                    print(f"      {line}", flush=True)
+            time.sleep(1.0)
+            speed = good_speed
+        if not ok:
+            sys.stderr.write(last_text)
+            sys.stderr.write(
+                f"FLASH_FAILED verify: whole-image verify failed - "
+                f"{explain(kind_of(last_text))}\n"
+            )
+            raise SystemExit(3)
+        print("Verified OK", flush=True)
     else:
-        sys.stderr.write(last_text)
-        sys.stderr.write(f"FLASH_FAILED full verify: {diagnose(last_text)}\n")
-        raise SystemExit(3)
+        print("Verified OK (per-sector)", flush=True)
+
+    if RUN_AFTER:
+        rc, text = run_openocd(
+            [f"init; adapter speed {speed}", "reset run", 'echo "FLASH_RUN"', "exit"],
+            timeout=min(OCD_TIMEOUT, 120),
+        )
+        if "FLASH_RUN" in text and "Error:" not in text:
+            print("target released with reset run", flush=True)
+        else:
+            print(
+                "warning: `reset run` did not confirm - power-cycle the pad "
+                "(jog away and back) to start the firmware",
+                flush=True,
+            )
 
     elapsed = time.monotonic() - started
     print(
         f"FLASH_OK {len(image)} bytes @ {flash_base:#x} "
-        f"work-area {wa_phys:#x} ({wa_label}) speed {speed} kHz "
-        f"in {elapsed:.1f}s",
+        f"work-area {wa_phys:#x} ({wa_label}) halt {halt_mode} "
+        f"speed {good_speed} kHz in {elapsed:.1f}s",
         flush=True,
     )
 finally:

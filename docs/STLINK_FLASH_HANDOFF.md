@@ -61,6 +61,10 @@ Knobs (environment):
 | `STLINK_WORKAREA` | auto | Force the loader RAM address |
 | `STLINK_WORKAREA_SIZE` | `0x10000` | Loader RAM size |
 | `STLINK_ATTEMPTS` | `3` | Attempts per sector |
+| `STLINK_FAST_SPEED` | `200` | kHz climbed to after a sector verifies (`0` = stay slow) |
+| `STLINK_RESET_HALT` | `1` | Halt out of reset before erasing (see below) |
+| `STLINK_HALT_TRIES` | `4` | Halt attempts before giving up |
+| `STLINK_RUN_AFTER` | `1` | `reset run` once the image verifies |
 | `STLINK_OPENOCD_TIMEOUT` | `300` | Per-OpenOCD-session timeout (s) |
 | `STLINK_FULL_VERIFY` | `1` | Second whole-image verify pass (`0` = per-sector only) |
 | `STLINK_FLASH_TIMEOUT` | `1800` | Server-side (`stlink.py`) ceiling for the whole flash (s) |
@@ -99,9 +103,80 @@ openocd -f tools/openocd_fixture.cfg \
 # expected: 0x24000000: 5aa5c33c
 ```
 
+### Halting: `reset halt`, never `halt`
+
+`halt` on a **running** app does not stick on this fixture. The core keeps
+executing (erratum 3092511 handling reports *"target was in unknown state when
+halt was requested"*) and the independent watchdog the app armed resets the
+chip a moment later, mid operation:
+
+```text
+Warn : [stm32h7x.cpu0] target was in unknown state when halt was requested
+Error: erase time-out or operation error sector 0
+Error: failed erasing sectors 0 to 0
+```
+
+or, when it happens during the write:
+
+```text
+Error: error waiting for target flash write algorithm
+Error: Fail reading CTRL/STAT register. Force reconnect
+Error: error during the lock of flash
+```
+
+Erasing bank 0 while the CPU executes out of bank 0 is also how a board ends up
+booting from a half-erased vector table (`SP = 0xFFFFFFFF` → lockup loop, and
+then every OpenOCD connect fails with `init mode failed (unable to connect to
+the target)`).
+
+The wrapper therefore starts **every** sector session with `reset halt`
+(SYSRESETREQ + vector catch): the core stops at the reset vector before any
+software runs, and IWDG is unarmed after a system reset. The halt is confirmed
+by reading `DHCSR` (`0xE000EDF0`, bit 17 `S_HALT`) before anything is erased —
+the erase only runs in the `else` branch of a Tcl `catch`, so a core that will
+not stop can never be erased underneath.
+
+```text
+target halted out of reset
+  sector 0/12 @ 0x8000000 (131072 bytes, erase 128 KiB)
+    verified (131072 bytes, 61 KiB/s)
+    adapter speed -> 100 kHz
+```
+
+If `reset halt` cannot be achieved, the wrapper falls back to `halt` plus
+stretching IWDG (`KR=0x5555`, `RLR=0xFFF`, `KR=0xAAAA`) and warns that this is
+less reliable; if even that fails it exits `4` **without erasing anything**.
+
+Manual recovery of a board stuck in the invalid-vector loop:
+
+```bash
+cd /home/quality/stepper_controller
+openocd -f tools/openocd_fixture.cfg \
+  -c "init; adapter speed 200; reset halt" \
+  -c "mdw 0xE000EDF0" \
+  -c "program firmware/indi_h743/arducopter_with_bl.hex verify reset exit"
+```
+
+`mdw 0xE000EDF0` must show bit 17 set (e.g. `a05f0013`). With the work area and
+the halt order both fixed, a single `program ... verify reset exit` is expected
+to work; the per-sector loop exists only to keep a failing sector from taking
+the rest of the image with it.
+
+### Symptom → cause
+
+| Log | Cause | Action |
+|-----|-------|--------|
+| `Failed to write memory at 0x2000xxxx` | loader RAM in DTCM | fixed: work area moved to AXI SRAM |
+| `target was in unknown state when halt was requested` | `halt` did not stop a running app | fixed: `reset halt` + DHCSR check |
+| `erase time-out or operation error sector 0` | target reset itself mid-erase (IWDG/brownout) | re-seat, power-cycle the pad, retry (`STLINK_SPEED=25`) |
+| `Fail reading CTRL/STAT register. Force reconnect` | SWD link lost (chip reset / contact) | re-seat contact, power-cycle |
+| `init mode failed (unable to connect to the target)` | chip in fault/lockup loop, or no contact | run the manual recovery above |
+| `no writable RAM for the flash loader` | no halt + no reachable RAM | re-seat, power-cycle, retry |
+
 Exit codes / markers from the wrapper: `0` ok (`FLASH_OK ...`),
-`1` usage or image-range error, `2` no writable work area (`FLASH_FAILED no
-writable RAM ...`), `3` flash/verify failed (`FLASH_FAILED sector N ...`).
+`1` usage or image-range error, `2` no writable work area (`FLASH_FAILED ram: ...`),
+`3` flash/verify failed (`FLASH_FAILED erase|write|verify|swd: ...`),
+`4` target could not be halted (`FLASH_FAILED halt: ...`, nothing erased).
 
 Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. After verify:
 
@@ -116,6 +191,7 @@ Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. Aft
 | 2 | ST-LINK missing / OpenOCD cannot open adapter |
 | 3 | Adapter up, VTarget present, SWD connect failed (contact / wiring / chip) |
 | 4 | Flash/verify failed |
+| 4 | Target would not halt / erase timed out (nothing erased) |
 | 5 | No writable RAM for the flash loader (see above) |
 
 Parse OpenOCD stderr for: `Target voltage`, `unable to connect`, `Verified OK`.
