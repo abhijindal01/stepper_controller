@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 
@@ -325,10 +326,23 @@ def _classify_openocd(stdout: str, stderr: str, returncode: int) -> dict:
     }
 
 
+def _subprocess_env(extra: dict | None) -> dict:
+    if not extra:
+        return os.environ.copy()
+    env = os.environ.copy()
+    for key, value in extra.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = str(value)
+    return env
+
+
 def run_openocd_script(
     script_name: str,
     args: list[str] | None = None,
     timeout: float = 120,
+    env: dict | None = None,
 ) -> dict:
     script = TOOLS / script_name
     if not script.is_file():
@@ -349,6 +363,7 @@ def run_openocd_script(
                 text=True,
                 timeout=timeout,
                 cwd=str(ROOT),
+                env=_subprocess_env(env),
             )
         except subprocess.TimeoutExpired as e:
             out = (e.stdout or "") if isinstance(e.stdout, str) else ""
@@ -387,47 +402,140 @@ def probe(timeout: float = 20) -> dict:
 
 
 FLASH_TIMEOUT = float(os.environ.get("STLINK_FLASH_TIMEOUT") or 1800)
+#: Link states that are worth retrying - they are transient on this fixture,
+#: and the same command often succeeds a couple of seconds later.
+TRANSIENT_STATES = ("swd_lost", "ap_fail", "link_unhealthy", "halt_fail")
+PRECHECK_N = int(os.environ.get("STLINK_FLASH_PRECHECK_N") or 3)
+PRECHECK_MIN_PCT = float(os.environ.get("STLINK_FLASH_PRECHECK_MIN") or 66)
+FLASH_RETRIES = int(os.environ.get("STLINK_FLASH_RETRIES") or 2)
+FLASH_RETRY_DELAY = float(os.environ.get("STLINK_FLASH_RETRY_DELAY") or 2)
 
 
-def flash(image: Path, base: str | None = None, timeout: float | None = None) -> dict:
+def _flash_default_base(image: Path) -> int:
+    """Base address used for a .bin, from its name."""
+    name = image.name.lower()
+    if "combined" in name or "bootloader" in name or name.endswith("_bl.bin"):
+        return FLASH_BASE
+    if "arducopter" in name:
+        return APP_BASE
+    return FLASH_BASE
+
+
+def flash(
+    image: Path,
+    base: str | None = None,
+    timeout: float | None = None,
+    speed: int | None = None,
+    precheck: bool | None = None,
+    retries: int | None = None,
+) -> dict:
+    """Flash an image, gating on link health and retrying transient failures.
+
+    ``speed`` selects the SWD kHz (the flash wrapper still walks its own
+    ladder down from there). ``precheck`` runs a short link soak first and
+    refuses to flash when the harness is marginal; ``retries`` re-attempts a
+    transient link failure with a pause in between.
+    """
     args = [str(image)]
+    resolved_base: int | None = None
     if base:
         args.append(base)
+        try:
+            resolved_base = int(str(base), 0)
+        except ValueError:
+            resolved_base = None
     elif image.suffix.lower() == ".bin":
-        # App-only bins default to app base; combined/bootloader to flash base
-        name = image.name.lower()
-        if "combined" in name or "bootloader" in name or name.endswith("_bl.bin"):
-            args.append(f"0x{FLASH_BASE:08X}")
-        elif "arducopter" in name:
-            args.append(f"0x{APP_BASE:08X}")
-        else:
-            args.append(f"0x{FLASH_BASE:08X}")
+        resolved_base = _flash_default_base(image)
+        args.append(f"0x{resolved_base:08X}")
 
-    # A combined 2 MB image is written 128 KiB at a time in a fresh OpenOCD
-    # session per sector at 50-100 kHz SWD, so this is slow by design;
-    # override with STLINK_FLASH_TIMEOUT (seconds).
-    result = run_openocd_script(
-        "stlink_flash.sh",
-        args=args,
-        timeout=timeout if timeout is not None else FLASH_TIMEOUT,
-    )
+    if precheck is None:
+        precheck = (os.environ.get("STLINK_FLASH_PRECHECK") or "1").strip().lower() not in (
+            "0", "false", "no", "off",
+        )
+    attempts = 1 if retries is None else max(0, int(retries)) + 1
+    if retries is None:
+        attempts = max(1, FLASH_RETRIES + 1)
+
+    link: dict | None = None
+    if precheck:
+        link = soak(count=PRECHECK_N, min_pct=PRECHECK_MIN_PCT, speed=speed)
+        if not link["ok"]:
+            return {
+                "ok": False,
+                "code": 3,
+                "state": "link_unhealthy",
+                "verified": False,
+                "image": str(image),
+                "base": args[1] if len(args) > 1 else None,
+                "speed": speed,
+                "link": link,
+                "hint": link.get("hint"),
+                "log": (
+                    f"link precheck: {link.get('passed')}/{link.get('attempts')} "
+                    f"sessions usable (need {PRECHECK_MIN_PCT:.0f} %) - not flashing\n"
+                    + (link.get("log") or "")
+                ),
+            }
+
+    env = {"STLINK_SPEED": speed} if speed else None
+    result: dict = {}
+    notes: list[str] = []
+    for attempt in range(1, attempts + 1):
+        # A combined 2 MB image is written 128 KiB at a time in a fresh
+        # OpenOCD session per sector, so this is slow by design; override with
+        # STLINK_FLASH_TIMEOUT (seconds).
+        result = run_openocd_script(
+            "stlink_flash.sh",
+            args=args,
+            timeout=timeout if timeout is not None else FLASH_TIMEOUT,
+            env=env,
+        )
+        log = result.get("log") or ""
+        if "FLASH_FAILED" in log:
+            # The classifier mapped FLASH_FAILED <kind> to code/state/hint;
+            # make sure the result is not reported as ok.
+            result["ok"] = False
+            if result.get("code") == 0:
+                result["code"] = 4
+            if result.get("state") in (None, "ok"):
+                result["state"] = "flash_fail"
+
+        if result.get("ok") or "FLASH_OK" in log:
+            result["ok"] = True
+            result["code"] = 0
+            result["state"] = "ok"
+            result["verified"] = True
+            break
+
+        if attempt >= attempts or result.get("state") not in TRANSIENT_STATES:
+            break
+
+        # Transient: pause, re-measure the link, then try the whole sector loop
+        # again from a fresh session.
+        delay = FLASH_RETRY_DELAY * attempt
+        notes.append(
+            f"attempt {attempt}/{attempts} failed ({result.get('state')}) - "
+            f"retrying in {delay:.0f}s"
+        )
+        time.sleep(delay)
+        if precheck:
+            link = soak(count=PRECHECK_N, min_pct=PRECHECK_MIN_PCT, speed=speed)
+            if not link["ok"]:
+                result["link"] = link
+                result["hint"] = link.get("hint")
+                result["state"] = "link_unhealthy"
+                result["ok"] = False
+                result["code"] = 3
+                break
+
     result["image"] = str(image)
     result["base"] = args[1] if len(args) > 1 else None
-
-    log = result.get("log") or ""
-    if "FLASH_OK" in log:
-        result["ok"] = True
-        result["code"] = 0
-        result["state"] = "ok"
-        result["verified"] = True
-    elif "FLASH_FAILED" in log:
-        # The classifier already mapped the FLASH_FAILED <kind> marker to a
-        # code/state/hint; only make sure it is reported as failed.
-        result["ok"] = False
-        if result.get("code") == 0:
-            result["code"] = 4
-        if result.get("state") in (None, "ok"):
-            result["state"] = "flash_fail"
+    result["speed"] = speed
+    result["attempts"] = attempt
+    if notes:
+        result["notes"] = notes
+    if link is not None:
+        result["link"] = link
     return result
 
 
@@ -436,7 +544,7 @@ SOAK_MIN_PCT = float(os.environ.get("STLINK_SOAK_MIN_PCT") or 90)
 
 
 def soak(count: int | None = None, min_pct: float | None = None,
-         timeout: float | None = None) -> dict:
+         timeout: float | None = None, speed: int | None = None) -> dict:
     """Open N OpenOCD sessions and report how many got a usable target.
 
     A marginal link (pogo contact, GND return, target power, ST-LINK USB) is
@@ -448,8 +556,15 @@ def soak(count: int | None = None, min_pct: float | None = None,
     # ~3 s per session upper bound, plus slack.
     timeout = timeout if timeout is not None else max(120.0, count * 20.0)
 
-    run = run_openocd_script("stlink_soak.sh", args=[str(count), "--min", str(min_pct)],
-                             timeout=timeout)
+    args = [str(count), "--min", str(min_pct)]
+    if speed:
+        args += ["--speed", str(int(speed))]
+    run = run_openocd_script(
+        "stlink_soak.sh",
+        args=args,
+        timeout=timeout,
+        env={"STLINK_SOAK_GAP": "0"} if count <= 5 else None,
+    )
     log = run.get("log") or ""
     passed = attempts = None
     m = re.search(r"pass rate:\s*(\d+)/(\d+)\s*=\s*([0-9.]+)\s*%", log)
@@ -506,5 +621,9 @@ def quick_status() -> dict:
             "work_area_size": f"0x{WORK_AREA_SIZE:08X}",
             "halt": "reset halt (SYSRESETREQ + vector catch)",
             "soak": f"{SOAK_N} sessions, needs {SOAK_MIN_PCT:.0f} %",
+            "flash_precheck": (
+                f"{PRECHECK_N} sessions, needs {PRECHECK_MIN_PCT:.0f} %"
+            ),
+            "flash_retries": FLASH_RETRIES,
         },
     }

@@ -688,6 +688,20 @@ def stlink_flash_image():
     image_name = data.get("image")
     base = str(data.get("base") or "").strip() or None
 
+    # Optional tuning: SWD kHz, link pre-check, transient-failure retries.
+    try:
+        speed = data.get("speed")
+        speed = None if speed in (None, "", "auto") else int(speed)
+        precheck = data.get("precheck")
+        precheck = None if precheck is None else bool(precheck)
+        retries = data.get("retries")
+        retries = None if retries in (None, "") else int(retries)
+    except (TypeError, ValueError):
+        return jsonify(
+            {"ok": False, "state": "bad_request",
+             "error": "speed/retries must be integers, precheck a boolean"}
+        ), 400
+
     resolved = stlink.resolve_image(image_name)
     if resolved is None:
         return (
@@ -701,7 +715,10 @@ def stlink_flash_image():
             404,
         )
 
-    return jsonify(stlink.flash(resolved, base=base))
+    result = stlink.flash(
+        resolved, base=base, speed=speed, precheck=precheck, retries=retries
+    )
+    return jsonify(result)
 
 
 @app.route("/api/stlink/soak", methods=["POST"])

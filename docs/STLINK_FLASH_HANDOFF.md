@@ -69,6 +69,11 @@ Knobs (environment):
 | `STLINK_OPENOCD_TIMEOUT` | `300` | Per-OpenOCD-session timeout (s) |
 | `STLINK_FULL_VERIFY` | `1` | Second whole-image verify pass (`0` = per-sector only) |
 | `STLINK_FLASH_TIMEOUT` | `1800` | Server-side (`stlink.py`) ceiling for the whole flash (s) |
+| `STLINK_CONNECT_BACKOFF` | `2` | Seconds before a failed *connect* is retried (0/2/4 s ladder) |
+| `STLINK_FLASH_PRECHECK` | `1` | Run a 3-session link check before flashing (`0` = skip) |
+| `STLINK_FLASH_PRECHECK_N` / `_MIN` | `3` / `66` | Sessions and pass rate the pre-check needs |
+| `STLINK_FLASH_RETRIES` | `2` | Retries of a *transient* link failure (`swd_lost`, `ap_fail`, `halt_fail`) |
+| `STLINK_FLASH_RETRY_DELAY` | `2` | Seconds between those retries (multiplied by attempt) |
 
 ### First: is the SWD link healthy?
 
@@ -167,6 +172,33 @@ openocd -f tools/openocd_fixture.cfg \
 # expected: 0x24000000: 5aa5c33c
 ```
 
+### Server side: link pre-check, retries and selectable speed
+
+`POST /api/stlink/flash` (and `/stlink/flash`) accepts, besides `image`/`base`:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `speed` | auto (50 kHz) | SWD kHz for this flash; the wrapper walks down from here |
+| `precheck` | `true` | Run a 3-session link check first (needs >= 66 %); on failure returns `state: link_unhealthy` and **does not flash** |
+| `retries` | `2` | Retry a transient failure (`swd_lost`, `ap_fail`, `halt_fail`) after `2 s x attempt`, re-checking the link in between; non-transient failures (`erase_fail`, `verify_fail`, `no_work_area`) are not retried |
+
+```bash
+curl -s -X POST http://127.0.0.1:5000/api/stlink/flash \
+  -H 'Content-Type: application/json' \
+  -d '{"image": "arducopter_with_bl.hex", "speed": 25, "precheck": true}'
+# {"ok": false, "state": "link_unhealthy", "code": 3,
+#  "log": "link precheck: 0/3 sessions usable (need 66 %) - not flashing", ...}
+```
+
+The dashboard exposes the same thing: a **Speed** selector next to the image
+selector, and a `Link Check (20)` button. A blocked flash logs
+`Flash blocked: the SWD link failed the pre-check`. Retries are reported as
+`Retry: attempt 1/3 failed (swd_lost) - retrying in 2s`.
+
+Rationale: on this fixture a connect failure is transient - the identical
+command succeeds seconds later - while a failing erase or verify is not. So
+pauses plus a link re-measure are worth it, but only for link-level failures.
+
 ### Halting: `reset halt`, never `halt`
 
 `halt` on a **running** app does not stick on this fixture. The core keeps
@@ -234,7 +266,7 @@ the rest of the image with it.
 | `target was in unknown state when halt was requested` | `halt` did not stop a running app | fixed: `reset halt` + DHCSR check |
 | `erase time-out or operation error sector 0` | target reset itself mid-erase (IWDG/brownout) | re-seat, power-cycle the pad, retry (`STLINK_SPEED=25`) |
 | `Fail reading CTRL/STAT register. Force reconnect` | SWD link lost (chip reset / contact) | re-seat contact, power-cycle |
-| `init mode failed (unable to connect to the target)` | chip in fault/lockup loop, or no contact | run the manual recovery above |
+| `init mode failed (unable to connect to the target)` | chip in fault/lockup loop, no contact, or SWD too fast for the harness | reported as `FLASH_FAILED swd: target could not be reached`; try `speed: 12-25`, then the manual recovery above |
 | `Failed to write/read memory at 0xE000xxxx`, `Execution of event examine-end failed` | core debug registers unreachable: link/AP failing | run `tools/stlink_soak.sh`; fix GND return / contact / target power |
 | `FLASH_FAILED swd: SWD link unhealthy` | link died during the work-area probe | same as above - do not retry the flash |
 | `no writable RAM for the flash loader` | no halt + no reachable RAM | re-seat, power-cycle, retry |
