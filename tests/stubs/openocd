@@ -2,20 +2,24 @@
 """Fake `openocd` for tests/check_scripts.sh.
 
 Emulates just enough of the STM32H743 + ST-LINK behaviour that
-tools/stlink_flash.sh relies on, so the flash wrapper can be exercised
+tools/stlink_flash.sh depends on, so the flash wrapper can be exercised
 without a board:
 
-  * keeps a tiny model of RAM writes (mww) and reads (mdw)
-  * remembers the flash-loader work area (configure -work-area-phys)
-  * writes an error and exits non-zero when the work area or a mww target
-    falls inside a "broken RAM" window
+  * a tiny Tcl-ish interpreter: `;`/newline separated statements, `catch {}`,
+    `if {$_rc != 0} { ... } else { ... }`, `echo`, `sleep`
+  * RAM model for `mww` / `mdw` and the flash-loader work area
+  * halt model for `halt` / `reset halt` reported back through DHCSR
+  * flash stages (`flash erase_address`, `flash write_image`, `verify_image`)
 
 Environment:
-  STUB_RAM_FAULT    comma separated RAM bases (0x20000000,...); each such
-                    64 KiB window faults on read/write, like the DTCM
-                    window on the real fixture
-  STUB_SWD_FAIL=1   emulate "unable to connect to the target"
-  STUB_OPENOCD_LOG  append each simulated session to this file
+  STUB_RAM_FAULT     comma separated RAM bases; each such 64 KiB window faults
+                     on read/write, like DTCM on the real fixture
+  STUB_SWD_FAIL=1    emulate "unable to connect to the target"
+  STUB_HALT_FAIL=1   `halt` and `reset halt` never stick (DHCSR stays running)
+  STUB_ERASE_FAIL=1  `flash erase_address` times out (watchdog reset)
+  STUB_DROP_AFTER    `halt`|`erase`|`write`: target drops off SWD afterwards
+                     ("Fail reading CTRL/STAT register"), permanently
+  STUB_OPENOCD_LOG   append each simulated session to this file
 """
 
 import os
@@ -29,6 +33,9 @@ while i < len(args):
     if args[i] == "-c" and i + 1 < len(args):
         commands.append(args[i + 1])
         i += 2
+    elif args[i] == "-f" and i + 1 < len(args):
+        commands.append('echo "cfg %s"' % args[i + 1])
+        i += 2
     else:
         i += 1
 
@@ -37,15 +44,23 @@ script = "\n".join(commands)
 log_path = os.environ.get("STUB_OPENOCD_LOG")
 if log_path:
     with open(log_path, "a", encoding="utf-8") as fh:
-        fh.write("---- openocd " + " ".join(commands) + "\n")
+        fh.write("---- openocd\n" + script + "\n")
 
 fault_bases = [
     int(p, 0) for p in (os.environ.get("STUB_RAM_FAULT") or "").split(",") if p.strip()
 ]
 
-
-def broken(addr: int) -> bool:
-    return any(base <= addr < base + 0x10000 for base in fault_bases)
+state = {
+    "halted": False,
+    "work_area": 0x20000000,   # OpenOCD default for stm32h7x.cfg
+    "dropped": False,
+    "mem": {},
+    "rc": 0,
+    "err": "",
+    "erase_done": False,
+    "write_done": False,
+    "stalled": False,
+}
 
 
 def emit(line: str, stream=sys.stdout) -> None:
@@ -53,84 +68,228 @@ def emit(line: str, stream=sys.stdout) -> None:
     stream.flush()
 
 
+def fail(line: str) -> None:
+    emit(line, sys.stderr)
+    raise SystemExit(1)
+
+
+def broken(addr: int) -> bool:
+    return any(base <= addr < base + 0x10000 for base in fault_bases)
+
+
+def drop_if_requested(after: str) -> None:
+    if (os.environ.get("STUB_DROP_AFTER") or "").strip().lower() == after:
+        state["dropped"] = True
+        emit("Error: Fail reading CTRL/STAT register. Force reconnect", sys.stderr)
+
+
+def split_statements(line: str) -> list[str]:
+    """Split on `;` at brace depth 0."""
+    out, buf, depth = [], "", 0
+    for ch in line:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == ";" and depth == 0:
+            out.append(buf)
+            buf = ""
+        else:
+            buf += ch
+    out.append(buf)
+    return [s.strip() for s in out if s.strip()]
+
+
+def do_halt() -> None:
+    if os.environ.get("STUB_HALT_FAIL") == "1":
+        # erratum-style: halt does not stick, the core keeps running
+        emit(
+            "Warn : [stm32h7x.cpu0] target was in unknown state when halt was requested",
+            sys.stderr,
+        )
+        raise SystemExit(1)
+    state["halted"] = True
+    emit("Info : [stm32h7x.cpu0] halt accepted")
+    drop_if_requested("halt")
+
+
+def do_reset_halt() -> None:
+    if os.environ.get("STUB_HALT_FAIL") == "1":
+        emit(
+            "Warn : [stm32h7x.cpu0] target was in unknown state when halt was requested",
+            sys.stderr,
+        )
+        emit("Error: [stm32h7x.cpu0] target not halted", sys.stderr)
+        raise SystemExit(1)
+    state["halted"] = True
+    emit("Info : [stm32h7x.cpu0] reset halt via SYSRESETREQ + vector catch")
+    drop_if_requested("halt")
+
+
+def do_statement(stmt: str) -> None:
+    if stmt.startswith("echo "):
+        text = stmt[5:].strip()
+        if text.startswith('"') and text.endswith('"'):
+            text = text[1:-1]
+        text = text.replace("$_e", state["err"] or "halt failed")
+        emit(text)
+        return
+
+    if stmt.startswith("sleep"):
+        return
+
+    if stmt.startswith("set _rc [catch {"):
+        inner = stmt[len("set _rc [catch {"):].rstrip("}").rstrip()
+        inner = inner.rsplit("}", 1)[0].strip()
+        try:
+            do_statement(inner)
+            state["rc"] = 0
+            state["err"] = ""
+        except SystemExit:
+            state["rc"] = 1
+            state["err"] = "halt failed"
+        return
+
+    if stmt.startswith("catch {"):
+        inner = stmt[len("catch {"):].rsplit("}", 1)[0].strip()
+        for part in split_statements(inner):
+            try:
+                do_statement(part)
+            except SystemExit:
+                pass
+        return
+
+    if re.search(r"\breset halt\b", stmt):
+        do_reset_halt()
+        return
+    if re.search(r"\breset run\b", stmt):
+        state["halted"] = False
+        return
+    if re.search(r"\bhalt\b", stmt):
+        do_halt()
+        return
+    if "adapter speed" in stmt or stmt in ("init", "exit"):
+        return
+
+    m = re.search(r"configure -work-area-phys (0x[0-9a-fA-F]+)", stmt)
+    if m:
+        state["work_area"] = int(m.group(1), 16)
+        return
+
+    m = re.search(r"mww (0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+)$", stmt)
+    if m:
+        addr, value = int(m.group(1), 16), int(m.group(2), 16)
+        if broken(addr):
+            fail(f"Error: Failed to write memory at 0x{addr:08x}")
+        state["mem"][addr] = value
+        return
+
+    m = re.search(r"mdw (0x[0-9a-fA-F]+)$", stmt)
+    if m:
+        addr = int(m.group(1), 16)
+        if state["dropped"]:
+            fail("Error: Failed to read memory and, additionally, failed to find out where")
+        if broken(addr):
+            fail(f"Error: Failed to read memory at 0x{addr:08x}")
+        if state["mem"].get(addr) is None and addr == 0xE000EDF0:
+            # DHCSR: S_HALT (bit 17) reflects whether the core stopped
+            value = 0xA05F0013 if state["halted"] else 0x00000003
+        else:
+            value = state["mem"].get(addr, 0)
+        emit(f"0x{addr:08x}: {value:08x}")
+        return
+
+    m = re.search(r"flash erase_address (0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+|\d+)$", stmt)
+    if m:
+        if state["dropped"]:
+            fail("Error: Failed to read memory and, additionally, failed to find out where")
+        if os.environ.get("STUB_ERASE_FAIL") == "1":
+            emit("Error: erase time-out or operation error sector 0", sys.stderr)
+            emit("Error: failed erasing sectors 0 to 0", sys.stderr)
+            raise SystemExit(1)
+        emit(f"erased address {m.group(1)} (length {m.group(2)}) in 0.400000s")
+        if state["work_area"] is None:  # pragma: no cover - never happens
+            pass
+        state["erase_done"] = True
+        drop_if_requested("erase")
+        return
+
+    m = re.search(r"flash write_image (\S+) (0x[0-9a-fA-F]+)$", stmt)
+    if m:
+        path = m.group(1)
+        if state["dropped"]:
+            fail("Error: error waiting for target flash write algorithm")
+        if not os.path.isfile(path):
+            fail(f"Error: could not open {path}")
+        base = state["work_area"]
+        for addr in (base, base + 0x2194, base + 0x3994):
+            if broken(addr):
+                fail(f"Error: Failed to write memory at 0x{addr:08x}")
+        emit(f"wrote {os.path.getsize(path)} bytes from file {path}")
+        state["write_done"] = True
+        drop_if_requested("write")
+        return
+
+    m = re.search(r"verify_image (\S+) (0x[0-9a-fA-F]+)$", stmt)
+    if m:
+        path = m.group(1)
+        if state["dropped"]:
+            fail("Error: Failed to read memory and, additionally, failed to find out where")
+        if not os.path.isfile(path):
+            fail(f"Error: could not open {path}")
+        base = state["work_area"]
+        for addr in (base, base + 0x2194, base + 0x3994):
+            if broken(addr):
+                fail(f"Error: Failed to write memory at 0x{addr:08x}")
+        emit(f"verified {os.path.getsize(path)} bytes at {m.group(2)} in 0.002000s")
+        return
+
+    # Unknown statement: ignore, like an unused Tcl setup line
+
+
 if os.environ.get("STUB_SWD_FAIL") == "1":
     emit("Error: init mode failed (unable to connect to the target)", sys.stderr)
     raise SystemExit(1)
 
-work_area = None  # what the wrapper configured
-mem: dict[int, int] = {}
+# --- minimal if/else tracking ------------------------------------------------
+branch_stack: list[dict] = []
 
 
-def loader_targets() -> list[int]:
-    """Addresses a `flash write_image` would touch to load the algorithm."""
-    base = work_area if work_area is not None else 0x20000000
-    return [base, base + 0x2194, base + 0x3994]
+def active() -> bool:
+    return all(b["active"] for b in branch_stack)
 
 
-def fail_memory(addr: int) -> None:
-    emit(f"Error: Failed to write memory at 0x{addr:08x}", sys.stderr)
-    emit(
-        "Error: error writing to flash at address 0x08000000 at offset 0x00000000",
-        sys.stderr,
-    )
-    raise SystemExit(1)
-
-
-for raw in re.split(r"[;\n]", script):
-    line = raw.strip()
+for raw_line in script.splitlines():
+    line = raw_line.strip()
     if not line:
         continue
 
-    m = re.search(r"configure -work-area-phys (0x[0-9a-fA-F]+)", line)
-    if m:
-        work_area = int(m.group(1), 16)
+    if line.startswith("if {") and line.endswith("{"):
+        cond_true = "!= 0" not in line or state["rc"] != 0
+        branch_stack.append({"active": cond_true, "seen_else": False})
+        continue
+    if line in ("} else {", "} else {", "else {"):
+        if branch_stack:
+            top = branch_stack[-1]
+            top["active"] = not top["active"] if not top["seen_else"] else top["active"]
+            top["seen_else"] = True
+        continue
+    if line == "}":
+        if branch_stack:
+            branch_stack.pop()
         continue
 
-    m = re.search(r"mww (0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+)$", line)
-    if m:
-        addr, value = int(m.group(1), 16), int(m.group(2), 16)
-        if broken(addr):
-            fail_memory(addr)
-        mem[addr] = value
+    if not active():
         continue
 
-    m = re.match(r"mdw (0x[0-9a-fA-F]+)$", line)
-    if m:
-        addr = int(m.group(1), 16)
-        if broken(addr):
-            emit(f"Error: Failed to read memory at 0x{addr:08x}", sys.stderr)
+    for stmt in split_statements(line):
+        if state["dropped"] and not stmt.startswith("echo"):
+            # every later session dies the same way
+            emit("Error: Failed to read memory and, additionally, failed to find out where", sys.stderr)
             raise SystemExit(1)
-        emit(f"0x{addr:08x}: {mem.get(addr, 0):08x}")
-        continue
+        do_statement(stmt)
 
-    m = re.match(r"flash erase_address (0x[0-9a-fA-F]+) (\d+)$", line)
-    if m:
-        emit(f"erased address {m.group(1)} (length {m.group(2)}) in 0.100000s")
-        continue
-
-    m = re.match(r"flash write_image (\S+) (0x[0-9a-fA-F]+)$", line)
-    if m:
-        path = m.group(1)
-        if not os.path.isfile(path):
-            emit(f"Error: could not open {path}", sys.stderr)
-            raise SystemExit(1)
-        for addr in loader_targets():
-            if broken(addr):
-                fail_memory(addr)
-        emit(f"wrote {os.path.getsize(path)} bytes from file {path}")
-        continue
-
-    m = re.match(r"verify_image (\S+) (0x[0-9a-fA-F]+)$", line)
-    if m:
-        path = m.group(1)
-        if not os.path.isfile(path):
-            emit(f"Error: could not open {path}", sys.stderr)
-            raise SystemExit(1)
-        for addr in loader_targets():
-            if broken(addr):
-                emit(f"Error: Failed to write memory at 0x{addr:08x}", sys.stderr)
-                raise SystemExit(1)
-        emit(f"verified {os.path.getsize(path)} bytes at {m.group(2)} in 0.002000s")
-        continue
+if state["dropped"] and not state["write_done"]:
+    raise SystemExit(1)
 
 raise SystemExit(0)

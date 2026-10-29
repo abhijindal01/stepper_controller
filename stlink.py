@@ -160,6 +160,59 @@ def _ram_fault_address(text: str) -> int | None:
     return None
 
 
+#: Failure kinds printed by tools/stlink_flash.sh as ``FLASH_FAILED <kind>: ...``
+#: mapped to (exit code, state, hint).
+FLASH_FAILURE_KINDS = {
+    "halt": (
+        4,
+        "halt_fail",
+        "The target would not halt (erratum 3092511 / running app), so the "
+        "erase timed out or was skipped. Re-seat contact, power-cycle the pad, "
+        "then retry at a lower STLINK_SPEED.",
+    ),
+    "erase": (
+        4,
+        "erase_fail",
+        "Flash erase failed - the target usually reset itself mid-erase "
+        "(independent watchdog or brownout). Check target power and retry.",
+    ),
+    "write": (
+        4,
+        "flash_fail",
+        "The flash loader failed while writing - check the image base address "
+        "and SWD speed.",
+    ),
+    "verify": (
+        4,
+        "verify_fail",
+        "Read-back did not match the image - re-flash; if it repeats, suspect "
+        "the flash bank or the SWD link.",
+    ),
+    "swd": (
+        3,
+        "swd_lost",
+        "SWD link lost - check pogo contact, target power, SWCLK/SWDIO.",
+    ),
+    "ram": (
+        5,
+        "no_work_area",
+        "No writable RAM for the flash loader - the target is not halted or "
+        "the SWD contact is broken.",
+    ),
+    "timeout": (
+        4,
+        "timeout",
+        "OpenOCD timed out - check the pad is powered and contact is held.",
+    ),
+}
+
+
+def _flash_failure_kind(text: str) -> str | None:
+    """Kind from a ``FLASH_FAILED <kind>: ...`` marker, if present."""
+    found = re.findall(r"FLASH_FAILED\s+(\w+):", text)
+    return found[-1].lower() if found else None
+
+
 def _classify_openocd(stdout: str, stderr: str, returncode: int) -> dict:
     text = f"{stdout}\n{stderr}"
     low = text.lower()
@@ -192,8 +245,13 @@ def _classify_openocd(stdout: str, stderr: str, returncode: int) -> dict:
     run_ok = "RUN_OK" in text
 
     ram_fault = _ram_fault_address(text)
+    fail_kind = _flash_failure_kind(text)
+    hinted = False
     hint = None
-    if ram_fault is not None:
+    if fail_kind in FLASH_FAILURE_KINDS:
+        code, state, hint = FLASH_FAILURE_KINDS[fail_kind]
+        hinted = True
+    elif ram_fault is not None:
         hint = (
             f"ST-LINK could not write RAM at 0x{ram_fault:08X}; the flash "
             "loader work area must live in AXI SRAM (0x24000000), not DTCM"
@@ -205,12 +263,29 @@ def _classify_openocd(stdout: str, stderr: str, returncode: int) -> dict:
     elif "dap transaction stalled" in low:
         hint = "SWD stalls at this adapter speed - lower STLINK_SPEED"
 
-    if connect_fail:
+    if hinted:
+        pass  # FLASH_FAILED marker already decided code/state/hint
+    elif (
+        "FLASH_EVENT halt_failed" in text
+        or "target not halted" in low
+        or "unknown state when halt was requested" in low
+    ):
+        code, state = 4, "halt_fail"
+        hint = FLASH_FAILURE_KINDS["halt"][2]
+    elif "erase time-out" in low or "failed erasing" in low:
+        code, state = 4, "erase_fail"
+        hint = FLASH_FAILURE_KINDS["erase"][2]
+    elif connect_fail:
         code, state = 3, "swd_fail"
     elif no_work_area:
         code, state = 5, "no_work_area"
     elif flash_fail or ram_fault is not None:
         code, state = 4, "flash_fail"
+        if ram_fault is not None and hint is None:
+            hint = (
+                f"ST-LINK could not write RAM at 0x{ram_fault:08X}; the flash "
+                "loader work area must live in AXI SRAM (0x24000000), not DTCM"
+            )
     elif flash_ok or verified or probe_ok or run_ok or returncode == 0:
         code, state = 0, "ok"
     elif "flash" in low or "program" in low:
@@ -333,9 +408,12 @@ def flash(image: Path, base: str | None = None, timeout: float | None = None) ->
         result["state"] = "ok"
         result["verified"] = True
     elif "FLASH_FAILED" in log:
+        # The classifier already mapped the FLASH_FAILED <kind> marker to a
+        # code/state/hint; only make sure it is reported as failed.
         result["ok"] = False
-        result.setdefault("code", 4)
-        if "RAM" in log or "memory at 0x" in log:
+        if result.get("code") == 0:
+            result["code"] = 4
+        if result.get("state") in (None, "ok"):
             result["state"] = "flash_fail"
     return result
 
@@ -360,5 +438,6 @@ def quick_status() -> dict:
             # STM32H7) is not writable over SWD on this fixture.
             "work_area": f"0x{WORK_AREA:08X} (AXI SRAM)",
             "work_area_size": f"0x{WORK_AREA_SIZE:08X}",
+            "halt": "reset halt (SYSRESETREQ + vector catch)",
         },
     }
