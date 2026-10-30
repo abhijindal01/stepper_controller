@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """Fake `openocd` for tests/check_scripts.sh.
 
-Emulates just enough of the STM32H743 + ST-LINK behaviour that
+Emulates enough of the STM32H743 + ST-LINK behaviour that
 tools/stlink_flash.sh depends on, so the flash wrapper can be exercised
 without a board:
 
   * a tiny Tcl-ish interpreter: `;`/newline separated statements, `catch {}`,
-    `if {$_rc != 0} { ... } else { ... }`, `echo`, `sleep`
-  * RAM model for `mww` / `mdw` and the flash-loader work area
-  * halt model for `halt` / `reset halt` reported back through DHCSR
-  * flash stages (`flash erase_address`, `flash write_image`, `verify_image`)
+    `if {$_rc != 0} { ... } else { ... }`, `echo`, `sleep`, `exit [n]`
+  * a byte-addressed memory model that survives between sessions (RAM and
+    flash live in files under STUB_MEM_DIR), so load_image / dump_image /
+    erase / verify can be compared for real
+  * halt model for `halt` / `reset halt` reported back through DHCSR,
+    including the erratum-3092511 "halt with pc/msp = 0" signature
+  * flash stages (`flash erase_address`, `flash write_image`, `verify_image`,
+    `program ... verify`, `stm32h7x mass_erase`)
 
 Environment:
   STUB_RAM_FAULT     comma separated RAM bases; each such 64 KiB window faults
@@ -17,10 +21,15 @@ Environment:
   STUB_RAM_FAULT_ABOVE  address; inside that 64 KiB window everything at or
                      above it faults, i.e. a work area that answers isolated
                      writes at its base and fails the loader footprint
-                     ("Failed to write memory at 0x24001874")
+  STUB_MEM_DIR       where the memory image lives (default: <state>.mem); RAM
+                     starts as 0x00, flash as 0xFF with a plausible vector table
   STUB_SWD_FAIL=1    emulate "unable to connect to the target"
   STUB_HALT_FAIL=1   `halt` and `reset halt` never stick (DHCSR stays running)
+  STUB_BOGUS_HALT=1  DHCSR says S_HALT but the log says pc/msp = 0 - erratum
+                     3092511: a halt that never happened
   STUB_ERASE_FAIL=1  `flash erase_address` times out (watchdog reset)
+  STUB_ERASE_INCOMPLETE=1  the erase silently leaves a byte behind, so the
+                     blank check must catch it
   STUB_DROP_AFTER    `halt`|`erase`|`write`: target drops off SWD afterwards
                      ("Fail reading CTRL/STAT register"), permanently
   STUB_DROP_ON_RAM=1 the link dies on the first RAM write (work-area probe)
@@ -31,23 +40,25 @@ Environment:
   STUB_FLASH_SIZE_KB device flash size reported by `flash probe 0` (default
                      2048); the stm32h7x driver splits it over two banks
   STUB_WRITE_FAIL_ONCE=1  the *first* `flash write_image` of the whole run
-                     fails with "Failed to write memory at 0x<wa>4074", the
-                     later ones work - the real "loader RAM unreachable" log
+                     fails with "Failed to write memory at 0x<wa>4074"
   STUB_WRITE_STATE_FILE  where that one-shot flag lives
   STUB_SPEED_MAX     connect only succeeds at adapter speeds <= this kHz
-                     (emulates a marginal link that needs a slow clock)
   STUB_LINK_PATTERN  per-session link health, e.g. "101" = every second
                      session fails at init (counter kept in STUB_STATE_FILE)
   STUB_STATE_FILE    where that session counter lives (default /tmp file)
-  STUB_VERIFY_FAIL=1 `verify_image` reports a mismatch (the flash read back
-                     something else), like a write that lied about succeeding
-  STUB_PROGRAM_FAIL=1  `program <file> <addr> verify` fails during the loader
-                     download, like this fixture really does
+  STUB_LOAD_FAIL_AT  `load_image` fails writing at this address
+  STUB_DUMP_FAIL_AT  `dump_image` fails reading at this address ("Failed to
+                     read memory at ..."), like the pad's ECC bus error
+  STUB_DUMP_UNSTABLE=1  the same range dumps different bytes on alternate calls
+                     (a link that corrupts what it reads)
+  STUB_VERIFY_FAIL=1 `verify_image` reports a mismatch
+  STUB_PROGRAM_FAIL=1  `program <file> <addr> verify` fails in the loader
   STUB_MASS_ERASE_FAIL=1  `stm32h7x mass_erase 0` never reports completion
   STUB_OPENOCD_LOG   append each simulated session to this file
 """
 
 import os
+import pathlib
 import re
 import sys
 
@@ -65,6 +76,18 @@ while i < len(args):
         i += 1
 
 script = "\n".join(commands)
+
+STATE_FILE = os.environ.get("STUB_STATE_FILE") or "/tmp/stub_openocd_sessions"
+MEM_DIR = pathlib.Path(
+    os.environ.get("STUB_MEM_DIR") or (STATE_FILE + ".mem")
+).resolve()
+FLASH_LO = 0x08000000
+FLASH_HI = 0x08200000
+
+
+def flag(name: str) -> bool:
+    return os.environ.get(name) == "1"
+
 
 log_path = os.environ.get("STUB_OPENOCD_LOG")
 if log_path:
@@ -88,13 +111,6 @@ state = {
     "halted": False,
     "work_area": 0x20000000,   # OpenOCD default for stm32h7x.cfg
     "dropped": False,
-    # Initial SP/PC of a programmed board. A board left mid-flash has sector 0
-    # erased, so both read back 0xFFFFFFFF (pc 0xfffffffe / msp 0xfffffffc).
-    "mem": (
-        {0x08000000: 0xFFFFFFFF, 0x08000004: 0xFFFFFFFF}
-        if os.environ.get("STUB_BLANK_VECTORS") == "1"
-        else {0x08000000: 0x24080000, 0x08000004: 0x08000201}
-    ),
     "rc": 0,
     "err": "",
     "erase_done": False,
@@ -113,6 +129,71 @@ def fail(line: str) -> None:
     raise SystemExit(1)
 
 
+# --------------------------------------------------------------- memory model
+
+def _region(addr: int) -> tuple[pathlib.Path, int, int]:
+    """(file, offset, default fill) for an address."""
+    if FLASH_LO <= addr < FLASH_HI:
+        return MEM_DIR / "flash.bin", addr - FLASH_LO, 0xFF
+    base = addr & 0xFFFF0000
+    return MEM_DIR / f"ram_{base:08x}.bin", addr - base, 0x00
+
+
+def _seeded(blob: bytearray, addr: int) -> bytearray:
+    """A fresh flash image looks like a programmed board, not like 0xFF."""
+    if not blob and FLASH_LO <= addr < FLASH_HI:
+        blob = bytearray(b"\xff" * 0x20000)
+        if not flag("STUB_BLANK_VECTORS"):
+            blob[0:8] = (0x24080000).to_bytes(4, "little") + (
+                0x08000201
+            ).to_bytes(4, "little")
+    return blob
+
+
+def mem_read(addr: int, length: int) -> bytearray:
+    path, off, fill = _region(addr)
+    try:
+        blob = bytearray(path.read_bytes())
+    except OSError:
+        blob = bytearray()
+    blob = _seeded(blob, addr)
+    out = bytearray([fill]) * length
+    seg = blob[off:off + length]
+    out[0:len(seg)] = seg
+    return out
+
+
+def mem_write(addr: int, data: bytes) -> None:
+    path, off, fill = _region(addr)
+    try:
+        blob = bytearray(path.read_bytes())
+    except OSError:
+        blob = bytearray()
+    blob = _seeded(blob, addr)
+    if len(blob) < off + len(data):
+        blob.extend(bytes([fill]) * (off + len(data) - len(blob)))
+    blob[off:off + len(data)] = data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(blob))
+
+
+def flash_erase(addr: int, length: int) -> None:
+    data = bytearray(b"\xff") * length
+    if flag("STUB_ERASE_INCOMPLETE") and length > 0x40:
+        data[0x40] = 0x00  # a byte the erase did not clear
+    mem_write(addr, bytes(data))
+
+
+def bump_counter(name: str) -> int:
+    path = pathlib.Path(STATE_FILE + "." + name)
+    try:
+        n = int(path.read_text().strip() or "0")
+    except (OSError, ValueError):
+        n = 0
+    path.write_text(str(n + 1))
+    return n
+
+
 fault_above = int(os.environ.get("STUB_RAM_FAULT_ABOVE") or "0", 0)
 
 
@@ -122,17 +203,17 @@ def broken(addr: int) -> bool:
     return any(base <= addr < base + 0x10000 for base in fault_bases)
 
 
-RAM_WINDOWS = (
-    (0x20000000, 0x20020000),
-    (0x24000000, 0x24080000),
-    (0x30000000, 0x30048000),
-    (0x38000000, 0x38010000),
-)
+def range_broken(base: int, length: int) -> int | None:
+    """First faulting 64 KiB window inside [base, base+length), if any."""
+    for addr in range(base & ~0xFFFF, base + max(length, 1), 0x10000):
+        if broken(addr):
+            return max(addr, base)
+    return None
 
 
 def ap_fault(addr: int) -> bool:
     """Core debug registers stop answering when STUB_AP_FAIL=1."""
-    if os.environ.get("STUB_AP_FAIL") != "1":
+    if not flag("STUB_AP_FAIL"):
         return False
     if addr == 0xE000EDF0:  # DHCSR stays readable: tests want a specific mode
         return False
@@ -145,13 +226,9 @@ def show_banner() -> None:
     for line in BANNER:
         emit(line)
     state["banner"] = True
-    if os.environ.get("STUB_AP_FAIL") == "1":
-        # FPB/DWT writes are how OpenOCD finishes examining the target.
+    if flag("STUB_AP_FAIL"):
         emit("Error: Failed to write memory at 0xe0002004", sys.stderr)
-        emit(
-            "Error: [stm32h7x.cpu0] Execution of event examine-end failed:",
-            sys.stderr,
-        )
+        emit("Error: [stm32h7x.cpu0] Execution of event examine-end failed:", sys.stderr)
 
 
 def drop_if_requested(after: str) -> None:
@@ -177,28 +254,40 @@ def split_statements(line: str) -> list[str]:
     return [s.strip() for s in out if s.strip()]
 
 
+def emit_halt_regs(pc: int, msp: int) -> None:
+    emit(
+        "[stm32h7x.cpu0] halted due to debug-request, current mode: Thread"
+    )
+    emit(f"xPSR: 0x01000000 pc: 0x{pc:08x} msp: 0x{msp:08x}")
+
+
 def do_halt() -> None:
-    if os.environ.get("STUB_AP_FAIL") == "1":
+    if flag("STUB_AP_FAIL"):
         emit("Error: Failed to write memory at 0xe0002010", sys.stderr)
         raise SystemExit(1)
-    if os.environ.get("STUB_HALT_FAIL") == "1":
-        # erratum-style: halt does not stick, the core keeps running
+    if flag("STUB_HALT_FAIL"):
         emit(
             "Warn : [stm32h7x.cpu0] target was in unknown state when halt was requested",
             sys.stderr,
         )
         raise SystemExit(1)
     state["halted"] = True
+    if flag("STUB_BOGUS_HALT"):
+        # DHCSR will claim S_HALT; the register dump says the halt never happened
+        emit_halt_regs(0x00000000, 0x00000000)
+        emit("Warn : [stm32h7x.cpu0] Erratum 3092511: Cortex-M7 can halt in an "
+             "incorrect address")
+        return
     emit("Info : [stm32h7x.cpu0] halt accepted")
     drop_if_requested("halt")
 
 
 def do_reset_halt() -> None:
-    if os.environ.get("STUB_AP_FAIL") == "1":
+    if flag("STUB_AP_FAIL"):
         emit("Error: Failed to write memory at 0xe0002010", sys.stderr)
         emit("Error: [stm32h7x.cpu0] target not halted", sys.stderr)
         raise SystemExit(1)
-    if os.environ.get("STUB_HALT_FAIL") == "1":
+    if flag("STUB_HALT_FAIL"):
         emit(
             "Warn : [stm32h7x.cpu0] target was in unknown state when halt was requested",
             sys.stderr,
@@ -206,17 +295,22 @@ def do_reset_halt() -> None:
         emit("Error: [stm32h7x.cpu0] target not halted", sys.stderr)
         raise SystemExit(1)
     state["halted"] = True
+    if flag("STUB_BOGUS_HALT"):
+        emit_halt_regs(0x00000000, 0x00000000)
+        emit("Warn : [stm32h7x.cpu0] Erratum 3092511: Cortex-M7 can halt in an "
+             "incorrect address")
+        return
     emit("Info : [stm32h7x.cpu0] reset halt via SYSRESETREQ + vector catch")
     drop_if_requested("halt")
 
 
 def write_fails_once() -> bool:
     """True the first time it is asked, False afterwards (per run)."""
-    if os.environ.get("STUB_WRITE_FAIL_ONCE") != "1":
+    if not flag("STUB_WRITE_FAIL_ONCE"):
         return False
     path = (
         os.environ.get("STUB_WRITE_STATE_FILE")
-        or (os.environ.get("STUB_STATE_FILE") or "/tmp/stub_openocd_sessions") + ".write"
+        or ((os.environ.get("STUB_STATE_FILE") or "/tmp/stub_openocd_sessions") + ".write")
     )
     try:
         with open(path, encoding="utf-8") as fh:
@@ -226,6 +320,34 @@ def write_fails_once() -> bool:
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(str(seen + 1))
     return seen == 0
+
+
+def verify_against(path_text: str, base: int) -> None:
+    """Compare the flash with a file and print OpenOCD's verdict."""
+    try:
+        want = pathlib.Path(path_text).read_bytes()
+    except OSError:
+        fail(f"Error: could not open {path_text}")
+    have = mem_read(base, len(want))
+    if flag("STUB_VERIFY_FAIL"):
+        emit("Error: checksum mismatch - attempting binary comparison", sys.stderr)
+        emit(f"Error: File {path_text} is not the same as flash at 0x{base:08x}",
+             sys.stderr)
+        raise SystemExit(1)
+    diffs = 0
+    for off in range(len(want)):
+        if want[off] != have[off]:
+            if diffs < 3:
+                emit(
+                    f"diff {off} address 0x{base + off:08x}. Was 0x{have[off]:02x} "
+                    f"instead of 0x{want[off]:02x}",
+                    sys.stderr,
+                )
+            diffs += 1
+    if diffs:
+        emit(f"More than 128 errors, the rest are not printed.", sys.stderr)
+        raise SystemExit(1)
+    emit(f"verified {len(want)} bytes at 0x{base:08x} in 0.002000s")
 
 
 def do_statement(stmt: str) -> None:
@@ -274,7 +396,6 @@ def do_statement(stmt: str) -> None:
         show_banner()
         return
     if stmt.startswith("exit"):
-        # `exit` and `exit 1` (the wrapper's "no halt" bail-out)
         parts = stmt.split()
         raise SystemExit(int(parts[1], 0) if len(parts) > 1 else 0)
     m = re.search(r"adapter speed (\d+)", stmt)
@@ -300,9 +421,11 @@ def do_statement(stmt: str) -> None:
             fail(f"Error: Failed to write memory at 0x{addr:08x}")
         if broken(addr):
             fail(f"Error: Failed to write memory at 0x{addr:08x}")
-        state["mem"][addr] = value
-        if os.environ.get("STUB_DROP_ON_RAM") == "1" and any(
-            lo <= addr < hi for lo, hi in RAM_WINDOWS
+        mem_write(addr, value.to_bytes(4, "little"))
+        if flag("STUB_DROP_ON_RAM") and any(
+            lo <= addr < hi for lo, hi in
+            ((0x20000000, 0x20020000), (0x24000000, 0x24080000),
+             (0x30000000, 0x30048000), (0x38000000, 0x38010000))
         ):
             state["dropped"] = True
             emit("Error: Fail reading CTRL/STAT register. Force reconnect", sys.stderr)
@@ -317,11 +440,11 @@ def do_statement(stmt: str) -> None:
             fail("Error: Failed to read memory and, additionally, failed to find out where")
         if broken(addr):
             fail(f"Error: Failed to read memory at 0x{addr:08x}")
-        if state["mem"].get(addr) is None and addr == 0xE000EDF0:
+        if addr == 0xE000EDF0:
             # DHCSR: S_HALT (bit 17) reflects whether the core stopped
             value = 0xA05F0013 if state["halted"] else 0x00000003
         else:
-            value = state["mem"].get(addr, 0)
+            value = int.from_bytes(mem_read(addr, 4), "little")
         emit(f"0x{addr:08x}: {value:08x}")
         return
 
@@ -339,15 +462,75 @@ def do_statement(stmt: str) -> None:
     if m:
         if state["dropped"]:
             fail("Error: Failed to read memory and, additionally, failed to find out where")
-        if os.environ.get("STUB_ERASE_FAIL") == "1":
+        if flag("STUB_ERASE_FAIL"):
             emit("Error: erase time-out or operation error sector 0", sys.stderr)
             emit("Error: failed erasing sectors 0 to 0", sys.stderr)
             raise SystemExit(1)
-        emit(f"erased address {m.group(1)} (length {m.group(2)}) in 0.400000s")
-        if state["work_area"] is None:  # pragma: no cover - never happens
-            pass
+        base = int(m.group(1), 16)
+        length = int(m.group(2), 0)
+        flash_erase(base, length)
+        emit(f"erased address 0x{base:08x} (length 0x{length:x}) in 0.400000s")
         state["erase_done"] = True
         drop_if_requested("erase")
+        return
+
+    if re.search(r"stm32h7x mass_erase", stmt):
+        if flag("STUB_MASS_ERASE_FAIL"):
+            fail("Error: Mass erase failed")
+        flash_erase(FLASH_LO, FLASH_HI - FLASH_LO)
+        emit("Info : stm32h7x mass erase complete")
+        return
+
+    m = re.search(r"load_image (\S+) (0x[0-9a-fA-F]+(?: 0x[0-9a-fA-F]+)?)(?: bin)?$", stmt)
+    if m:
+        path = m.group(1)
+        try:
+            data = pathlib.Path(path).read_bytes()
+        except OSError:
+            fail(f"Error: could not open {path}")
+        base = int(m.group(2).split()[0], 16)
+        bad_at = (os.environ.get("STUB_LOAD_FAIL_AT") or "").strip()
+        if bad_at:
+            bad = int(bad_at, 0)
+            if base <= bad < base + len(data):
+                fail(f"Error: Failed to write memory at 0x{bad:08x}")
+        if state["dropped"]:
+            fail("Error: Failed to read memory and, additionally, failed to find out where")
+        bad = range_broken(base, len(data))
+        if bad is not None:
+            fail(f"Error: Failed to write memory at 0x{bad:08x}")
+        mem_write(base, data)
+        emit(f"wrote {len(data)} bytes from file {path}")
+        return
+
+    m = re.search(r"dump_image (\S+) (0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+)$", stmt)
+    if m:
+        path = m.group(1)
+        base = int(m.group(2), 16)
+        length = int(m.group(3), 16)
+        bad_at = (os.environ.get("STUB_DUMP_FAIL_AT") or "").strip()
+        if bad_at:
+            bad = int(bad_at, 0)
+            if base <= bad < base + length:
+                fail(f"Error: Failed to read memory at 0x{bad:08x}")
+        if state["dropped"]:
+            fail("Error: Failed to read memory and, additionally, failed to find out where")
+        bad = range_broken(base, length)
+        if bad is not None:
+            fail(f"Error: Failed to read memory at 0x{bad:08x}")
+        data = mem_read(base, length)
+        in_flash = FLASH_LO <= base < FLASH_HI
+        if flag("STUB_VERIFY_FAIL") and in_flash and length > 0x30:
+            # the flash reads back something else than what was written; the
+            # corruption is deterministic so the *preflight* still matches
+            data[0x20] ^= 0xFF
+        if flag("STUB_DUMP_UNSTABLE") and in_flash and length > 0x20:
+            # the same range reads differently every other time
+            n = bump_counter("dump")
+            data[0x10] = 0xAA if n % 2 == 0 else 0x55
+        pathlib.Path(path).parent.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(path).write_bytes(bytes(data))
+        emit(f"dumped {length} bytes in 0.002000s (512.000 KiB/s)")
         return
 
     m = re.search(r"flash write_image (\S+) (0x[0-9a-fA-F]+)$", stmt)
@@ -355,7 +538,9 @@ def do_statement(stmt: str) -> None:
         path = m.group(1)
         if state["dropped"]:
             fail("Error: error waiting for target flash write algorithm")
-        if not os.path.isfile(path):
+        try:
+            data = pathlib.Path(path).read_bytes()
+        except OSError:
             fail(f"Error: could not open {path}")
         base = state["work_area"]
         for addr in (base, base + 0x2194, base + 0x3994):
@@ -363,50 +548,38 @@ def do_statement(stmt: str) -> None:
                 fail(f"Error: Failed to write memory at 0x{addr:08x}")
         if write_fails_once():
             fail(f"Error: Failed to write memory at 0x{base + 0x4074:08x}")
-        emit(f"wrote {os.path.getsize(path)} bytes from file {path}")
+        mem_write(int(m.group(2), 16), data)
+        emit(f"wrote {len(data)} bytes from file {path}")
         state["write_done"] = True
         drop_if_requested("write")
-        return
-
-    if re.search(r"stm32h7x mass_erase", stmt):
-        if os.environ.get("STUB_MASS_ERASE_FAIL") == "1":
-            fail("Error: Mass erase failed")
-        emit("Info : stm32h7x mass erase complete")
-        state["mem"] = {0x08000000: 0xFFFFFFFF, 0x08000004: 0xFFFFFFFF}
-        return
-
-    m = re.search(r"program (\S+) (0x[0-9a-fA-F]+)( verify)?$", stmt)
-    if m:
-        path = m.group(1)
-        if state["dropped"] or os.environ.get("STUB_PROGRAM_FAIL") == "1":
-            fail(f"Error: Failed to write memory at 0x24001874")
-        if not os.path.isfile(path):
-            fail(f"Error: could not open {path}")
-        emit("** Programming Started **")
-        emit(f"wrote {os.path.getsize(path)} bytes from file {path}")
-        emit("** Programming Finished **")
-        emit("** Verified OK **")
         return
 
     m = re.search(r"verify_image (\S+) (0x[0-9a-fA-F]+)$", stmt)
     if m:
         path = m.group(1)
-        if os.environ.get("STUB_VERIFY_FAIL") == "1":
-            emit("Error: checksum mismatch - attempting binary comparison", sys.stderr)
-            emit(
-                "Error: File " + path + " is not the same as flash at " + m.group(2),
-                sys.stderr,
-            )
-            raise SystemExit(1)
         if state["dropped"]:
             fail("Error: Failed to read memory and, additionally, failed to find out where")
-        if not os.path.isfile(path):
-            fail(f"Error: could not open {path}")
         base = state["work_area"]
         for addr in (base, base + 0x2194, base + 0x3994):
             if broken(addr):
                 fail(f"Error: Failed to write memory at 0x{addr:08x}")
-        emit(f"verified {os.path.getsize(path)} bytes at {m.group(2)} in 0.002000s")
+        verify_against(path, int(m.group(2), 16))
+        return
+
+    m = re.search(r"program (\S+) (0x[0-9a-fA-F]+)( verify)?$", stmt)
+    if m:
+        path = m.group(1)
+        if state["dropped"] or flag("STUB_PROGRAM_FAIL"):
+            fail("Error: Failed to write memory at 0x24001874")
+        try:
+            data = pathlib.Path(path).read_bytes()
+        except OSError:
+            fail(f"Error: could not open {path}")
+        emit("** Programming Started **")
+        mem_write(int(m.group(2), 16), data)
+        emit(f"wrote {len(data)} bytes from file {path}")
+        emit("** Programming Finished **")
+        emit("** Verified OK **")
         return
 
     # Unknown statement: ignore, like an unused Tcl setup line
@@ -415,17 +588,14 @@ def do_statement(stmt: str) -> None:
 pattern = (os.environ.get("STUB_LINK_PATTERN") or "").strip()
 pattern_fail = False
 if pattern:
-    state_file = os.environ.get("STUB_STATE_FILE") or "/tmp/stub_openocd_sessions"
     try:
-        with open(state_file, encoding="utf-8") as fh:
-            index = int(fh.read().strip() or "0")
+        index = int(pathlib.Path(STATE_FILE).read_text().strip() or "0")
     except (OSError, ValueError):
         index = 0
-    with open(state_file, "w", encoding="utf-8") as fh:
-        fh.write(str(index + 1))
+    pathlib.Path(STATE_FILE).write_text(str(index + 1))
     pattern_fail = pattern[index % len(pattern)] == "1"
 
-if os.environ.get("STUB_SWD_FAIL") == "1" or pattern_fail:
+if flag("STUB_SWD_FAIL") or pattern_fail:
     emit("Info : STLINK V2J46S7 (API v2) VID:PID 0483:3748")
     emit("Info : Target voltage: 3.280000")
     emit("Error: init mode failed (unable to connect to the target)", sys.stderr)
@@ -448,7 +618,7 @@ for raw_line in script.splitlines():
         cond_true = "!= 0" not in line or state["rc"] != 0
         branch_stack.append({"active": cond_true, "seen_else": False})
         continue
-    if line in ("} else {", "} else {", "else {"):
+    if line in ("} else {", "else {"):
         if branch_stack:
             top = branch_stack[-1]
             top["active"] = not top["active"] if not top["seen_else"] else top["active"]
@@ -465,7 +635,8 @@ for raw_line in script.splitlines():
     for stmt in split_statements(line):
         if state["dropped"] and not stmt.startswith("echo"):
             # every later session dies the same way
-            emit("Error: Failed to read memory and, additionally, failed to find out where", sys.stderr)
+            emit("Error: Failed to read memory and, additionally, failed to find out where",
+                 sys.stderr)
             raise SystemExit(1)
         do_statement(stmt)
 

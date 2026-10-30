@@ -7,6 +7,13 @@ Only the two invocations tools/stlink_flash.sh uses are modelled:
     st-flash --connect-under-reset write <file> <addr>
 
 Environment:
+  STUB_MEM_DIR             the memory image shared with tests/stubs/openocd; a
+                           write lands there so the wrapper's readback (and the
+                           fake OpenOCD) sees exactly what st-flash programmed
+  STUB_STFLASH_PARTIAL     program only the first N bytes, then fail - the real
+                           "131072/131072 bytes written" + PGSERR signature
+  STUB_STFLASH_PGSERR=1    emit "Flash programming error: 0x00040000" and
+                           "stlink_fwrite_flash() == -1" after programming
   STUB_STFLASH_LOG         append every invocation here (one line per call)
   STUB_STFLASH_FAIL_TIMES  the first N invocations fail to enter SWD mode, the
                            later ones work - the real dongle behaviour:
@@ -21,7 +28,40 @@ Environment:
 """
 
 import os
+import pathlib
 import sys
+
+FLASH_LO = 0x08000000
+FLASH_HI = 0x08200000
+
+
+def mem_dir() -> pathlib.Path:
+    state = os.environ.get("STUB_STATE_FILE") or "/tmp/stub_openocd_sessions"
+    return pathlib.Path(os.environ.get("STUB_MEM_DIR") or (state + ".mem")).resolve()
+
+
+def flash_write(addr: int, data: bytes) -> None:
+    """Mirror the fake OpenOCD's flash model (0xFF-filled 128 KiB sector 0)."""
+    if not (FLASH_LO <= addr < FLASH_HI):
+        return
+    path = mem_dir() / "flash.bin"
+    try:
+        blob = bytearray(path.read_bytes())
+    except OSError:
+        blob = bytearray(b"\xff" * 0x20000)
+    off = addr - FLASH_LO
+    if len(blob) < off + len(data):
+        blob.extend(b"\xff" * (off + len(data) - len(blob)))
+    blob[off:off + len(data)] = data
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(bytes(blob))
+
+
+def flash_blank(addr: int, length: int) -> None:
+    data = bytearray(b"\xff" * length)
+    if os.environ.get("STUB_ERASE_INCOMPLETE") == "1" and length > 0x40:
+        data[0x40] = 0x00  # a byte the erase did not clear
+    flash_write(addr, bytes(data))
 
 args = sys.argv[1:]
 flash_kb = int(os.environ.get("STUB_STFLASH_FLASH_KB") or "1024", 0)
@@ -77,6 +117,7 @@ if os.environ.get("STUB_STFLASH_DIE") == verb:
 
 if verb == "erase":
     print("Mass erasing", file=sys.stderr)
+    flash_blank(FLASH_LO, FLASH_HI - FLASH_LO)
     print("Flash erased", file=sys.stderr)
     raise SystemExit(0)
 
@@ -100,8 +141,28 @@ size = len(data)
 if os.environ.get("STUB_STFLASH_SHORT_WRITE") == "1":
     size = max(0, size - 4096)
 
-print(f"Mass erasing", file=sys.stderr)
+print("Mass erasing", file=sys.stderr)
 print(f"Flash page {addr:#010x} erased", file=sys.stderr)
+flash_blank(addr, 0x20000)  # the page erase comes first, always
+
+partial = int(os.environ.get("STUB_STFLASH_PARTIAL") or "0", 0)
+if partial:
+    flash_write(addr, data[:partial])
+    print(f"{len(data)}/{len(data)} bytes written", file=sys.stderr)
+    print("2026-10-30T00:00:00 ERROR common_flash.c: Flash programming error: "
+          f"0x00040000", file=sys.stderr)
+    print("stlink_fwrite_flash() == -1", file=sys.stderr)
+    raise SystemExit(1)
+
+if os.environ.get("STUB_STFLASH_PGSERR") == "1":
+    flash_write(addr, data)
+    print(f"{len(data)}/{len(data)} bytes written", file=sys.stderr)
+    print("ERROR common_flash.c: Flash programming error: 0x00040000",
+          file=sys.stderr)
+    print("stlink_fwrite_flash() == -1", file=sys.stderr)
+    raise SystemExit(1)
+
+flash_write(addr, data[:size])
 print(f"{size}/{len(data)} bytes written", file=sys.stderr)
 
 if size != len(data):

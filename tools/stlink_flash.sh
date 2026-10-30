@@ -1,7 +1,7 @@
 #!/bin/bash
 # Flash .bin/.hex via ST-LINK for IndiH743 (no NRST).
 #
-# Four fixture quirks are handled here:
+# Five fixture quirks are handled here:
 #
 # 1. Flash-loader RAM. OpenOCD defaults the STM32H7 work area to DTCM
 #    (0x20000000); writes there fault on this fixture ("Failed to write memory
@@ -36,6 +36,19 @@
 #
 #    STLINK_BACKEND=ocd forces the old path, =stflash forces the new one.
 #
+# 5. Verdicts are measurements, not exit codes. `st-flash` reports "131072/131072
+#    bytes written" and then exits non-zero, OpenOCD reports a readback it could
+#    not perform - so the flash is read back and *compared* before anything is
+#    claimed. Three outcomes, three messages:
+#
+#        FLASH_OK ...                       readback equals the image
+#        FLASH_FAILED ... partially written  readback differs, and by how much
+#        FLASH_FAILED readback: ...          the link could not read it at all
+#
+#    A byte-for-byte readback is also the cheapest link test there is: if two
+#    readbacks of the same range disagree, nothing may be erased (see
+#    STLINK_READBACK_PREFLIGHT).
+#
 #   tools/stlink_flash.sh <image.bin|image.hex> [base_addr_for_bin]
 #
 # Environment overrides:
@@ -63,6 +76,20 @@
 #                            (default 1; the author of the write never votes)
 #   STLINK_LOG_DIR          where session logs go     (default /tmp)
 #   STLINK_KEEP_LOGS        1 = keep every session log (default 1)
+#   STLINK_STFLASH_CONNECT  under-reset|plain how st-flash attaches (default
+#                            under-reset: it holds the core, which is the only
+#                            way that has ever worked on a blank H7)
+#   STLINK_STFLASH_FREQ     value for `st-flash --freq=` (default: unset = its
+#                            own 1.8 MHz; try 25k/5k when programming errors)
+#   STLINK_STFLASH_FLASH    value for `st-flash --flash=` (default: unset =
+#                            auto-detect; 1M when the probe is marginal)
+#   STLINK_RETRY_DELAY      base seconds between st-flash attempts (default 2)
+#   STLINK_READBACK_PREFLIGHT  1 = require two identical readbacks before any
+#                            erase (default 1; STLINK_READBACK_BYTES, 0x2000)
+#   STLINK_BLANK_CHECK      1 = after an erase, require the range to read
+#                            0xFF before writing (default 1)
+#   STLINK_RAM_INTEGRITY    1 = load a random block into the work area and read
+#                            it back before erasing (default 1)
 #   OPENOCD                 openocd binary            (default openocd)
 #
 # Exit codes: 0 ok, 1 usage/file error (including an image that does not fit
@@ -77,7 +104,7 @@ PY="${ROOT}/../venv/bin/python3"
 [[ -x "$PY" ]] || PY=python3
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '2,72p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,99p' "$0" | sed 's/^# \{0,1\}//'
   [[ $# -lt 1 ]] && exit 1
   exit 0
 fi
@@ -148,6 +175,14 @@ MASS_ERASE = _flag("STLINK_MASS_ERASE", False)
 VERIFY_OCD = _flag("STLINK_VERIFY_OCD", True)
 LOG_DIR = Path(_env("STLINK_LOG_DIR", tempfile.gettempdir()))
 KEEP_LOGS = _flag("STLINK_KEEP_LOGS", True)
+STFLASH_CONNECT = (_env("STLINK_STFLASH_CONNECT", "under-reset") or "").strip().lower()
+STFLASH_FREQ = _env("STLINK_STFLASH_FREQ", "").strip()
+STFLASH_FLASH = _env("STLINK_STFLASH_FLASH", "").strip()
+RETRY_DELAY = max(0.0, float(_env("STLINK_RETRY_DELAY", "2")))
+READBACK_PREFLIGHT = _flag("STLINK_READBACK_PREFLIGHT", True)
+READBACK_BYTES = int(_env("STLINK_READBACK_BYTES", "0x2000"), 0)
+BLANK_CHECK = _flag("STLINK_BLANK_CHECK", True)
+RAM_INTEGRITY = _flag("STLINK_RAM_INTEGRITY", True)
 
 # Sectors that were erased but not written back yet. Every failure message
 # repeats this, because "nothing was erased" is only true when it is empty.
@@ -291,7 +326,10 @@ def kind_of(text: str) -> str:
     #     Error: error during the lock of flash
     #     Error: Error closing APs
     if (
-        "error during the lock of flash" in low
+        "flash programming error" in low
+        or "stlink_fwrite_flash" in low
+        or "0x00040000" in low
+        or "error during the lock of flash" in low
         or "address 0x5200200c" in low
         or "error closing aps" in low
         or ("flash write algorithm" in low and "ctlr/stat" in low)
@@ -354,6 +392,12 @@ def explain(kind: str) -> str:
             "st-flash could not write the image - SWD entry or the write itself "
             "failed; check contact, target power and the dongle (USB resets)"
         ),
+        "readback": (
+            "the flash could not be read back at all, so its contents are "
+            "unknown - this is a link failure, not a mismatch, and on a blank "
+            "H7 it is usually erratum 3092511 (bogus halt). Power-cycle the pad "
+            "and retry with STLINK_BACKEND=stflash"
+        ),
         "verify": "image read back different from what was written",
         "timeout": "OpenOCD did not finish in time",
         "unknown": "OpenOCD failed (see log)",
@@ -411,6 +455,14 @@ def ram_usable(phys: int, size: int, speed: int) -> tuple[bool, str, int | None]
     cmds.append("exit")
 
     rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
+    low = text.lower()
+    if (
+        bogus_halt(text)
+        or "unknown state when halt was requested" in low
+        or "target not halted" in low
+    ):
+        # Reading zeros out of a target that never stopped is not a RAM verdict.
+        return False, text + "\nNOT_HALTED\n", None
     if rc != 0 or "Error:" in text:
         # Report *which* spot died: that address is what the loader would have
         # hit, and 0x24001874 / 0x24004074 in an OpenOCD log are the signature
@@ -489,6 +541,22 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
                 print(f"work area {label} @ {phys:#x} - RAM check ok", flush=True)
                 return phys, WA_SIZE, label
 
+            if "NOT_HALTED" in text:
+                print(
+                    f"work area {label} @ {phys:#x} - probe not performed: the "
+                    "target did not halt (erratum 3092511)",
+                    flush=True,
+                )
+                sys.stderr.write(
+                    "FLASH_FAILED halt: the target did not halt, so the RAM "
+                    "probe is meaningless and nothing was erased\n"
+                    "    a blank H7 halts into erratum 3092511 (pc/msp = 0); "
+                    "power-cycle the pad, or\n"
+                    "    use STLINK_BACKEND=stflash, which connects under reset "
+                    "and holds the core\n"
+                )
+                raise SystemExit(4)
+
             kind = kind_of(text)
             where = f" at {bad:#x}" if bad else ""
             print(
@@ -566,7 +634,13 @@ def halt_target(speed: int) -> str:
             ]
             rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 90))
             last = text
-            if halted(text):
+            if halted(text) and bogus_halt(text):
+                print(
+                    "halt reported with pc/msp = 0 - that is erratum 3092511 (a "
+                    "halt that never happened), not a halted core; retrying",
+                    flush=True,
+                )
+            elif halted(text):
                 if attempt > 1:
                     print(f"target halted out of reset (attempt {attempt})", flush=True)
                 else:
@@ -585,7 +659,7 @@ def halt_target(speed: int) -> str:
             ]
             rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 90))
             last = text
-            if halted(text):
+            if halted(text) and not bogus_halt(text):
                 print(
                     "target halted with plain halt (watchdog stretched) - "
                     "less reliable than reset halt",
@@ -607,7 +681,7 @@ def halt_target(speed: int) -> str:
     ]
     rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 90))
     last = text
-    if halted(text):
+    if halted(text) and not bogus_halt(text):
         print("target halted after repeated halt requests (watchdog not reset)", flush=True)
         return "halt-retry"
 
@@ -622,6 +696,20 @@ def halt_target(speed: int) -> str:
     else:
         headline = "target could not be halted"
     sys.stderr.write(last)
+    if bogus_halt(last):
+        sys.stderr.write(
+            "FLASH_FAILED halt: the target reported a halt with pc/msp = 0 - that "
+            "is erratum 3092511\n"
+            "    (a halt that never happened; it is what a blank H7 does after "
+            "reset). Every access\n"
+            "    from that state fails, including loader downloads. Nothing was "
+            "erased.\n"
+            "    power-cycle the pad and retry; if the flash is blank, use "
+            "STLINK_BACKEND=stflash\n"
+            "    (st-flash connects under reset and holds the core, which avoids "
+            "the erratum).\n"
+        )
+        raise SystemExit(4)
     sys.stderr.write(
         f"FLASH_FAILED {kind}: {headline} - {explain(kind)}\n"
         "    nothing was erased.\n"
@@ -721,6 +809,237 @@ def note_log(name: str, text: str, indent: str = "      ") -> None:
         print(f"{indent}full log: {path}", flush=True)
 
 
+# ------------------------------------------------------- readback / integrity checks
+#
+# Everything below exists because the pad taught us that "the tool said it worked"
+# and "the flash holds the image" are different statements, and that a link can
+# carry a single register write while corrupting a burst.
+
+BOGUS_HALT = re.compile(r"pc:\s*(?:0x)?0+\s+msp:\s*(?:0x)?0+(?![0-9a-f])", re.I)
+
+
+def bogus_halt(text: str) -> bool:
+    """erratum 3092511: OpenOCD reports a halt with pc/msp = 0 that never happened.
+
+    Seen on the pad after sector 0 was erased: `halted due to debug-request ...
+    pc: 0x00000000 msp: 0x00000000` followed by `unknown/unexpected STLINK
+    status code 0x12` and `Failed to write memory at 0x24000c00`. Every access
+    from that state fails, so a session that shows it must not be believed.
+    """
+    return bool(BOGUS_HALT.search(text))
+
+
+def unreadable(text: str) -> bool:
+    """True when a readback did not happen (as opposed to mismatching)."""
+    low = text.lower()
+    return (
+        "failed to read memory" in low
+        or "error reading" in low
+        or "dumped 0 bytes" in low
+        or "status code 0x1" in low
+    )
+
+
+def read_flash(base: int, length: int, speed: int) -> tuple[bytes | None, str]:
+    """dump_image, and only call it a readback if the bytes really came back."""
+    tmpdir = Path(tempfile.mkdtemp(prefix="stlink_rb_"))
+    out = tmpdir / "rb.bin"
+    try:
+        cmds = [
+            f"init; adapter speed {speed}",
+            "catch {reset halt}",
+            f"dump_image {out} {base:#x} {length:#x}",
+            "exit",
+        ]
+        rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 600))
+        if rc != 0 or unreadable(text) or not out.exists():
+            return None, text
+        data = out.read_bytes()
+        if len(data) != length:
+            return None, text + f"\nSHORT_READ {len(data)} of {length} bytes\n"
+        return data, text
+    finally:
+        for f in tmpdir.glob("*"):
+            f.unlink(missing_ok=True)
+        tmpdir.rmdir()
+
+
+def verify_readback(base: int, image: bytes, speed: int) -> tuple[str, dict]:
+    """Read the flash back and measure how much of `image` is really there.
+
+    Returns ("ok"|"partial"|"unreadable", details). "unreadable" is not a
+    verdict about the image: it means the link could not produce it.
+    """
+    data, text = read_flash(base, len(image), speed)
+    if data is None:
+        return "unreadable", {"text": text}
+    if data == image:
+        return "ok", {"matching": len(image), "text": text}
+    matching = sum(1 for a, b in zip(data, image) if a == b)
+    first = next((i for i, (a, b) in enumerate(zip(data, image)) if a != b), None)
+    return "partial", {
+        "matching": matching,
+        "first": first,
+        "address": base + first if first is not None else base,
+        "text": text,
+    }
+
+
+def blank_of(data: bytes) -> tuple[bool, int]:
+    """(all 0xFF, index of the first non-0xFF byte)."""
+    for i, b in enumerate(data):
+        if b != 0xFF:
+            return False, i
+    return True, -1
+
+
+def blank_check(base: int, length: int, speed: int, what: str = "the erased range") -> None:
+    """An erase that did not leave 0xFF guarantees PGSERR on the next program."""
+    if not BLANK_CHECK:
+        return
+    data, text = read_flash(base, length, speed)
+    if data is None:
+        sys.stderr.write(text)
+        sys.stderr.write(
+            f"FLASH_FAILED readback: could not read {what} back after erasing it "
+            f"({base:#x}..{base + length:#x}) - the link cannot carry a "
+            "sustained transfer, so nothing was written\n"
+        )
+        raise SystemExit(3)
+    clean, first = blank_of(data)
+    if not clean:
+        sys.stderr.write(
+            f"FLASH_FAILED erase: {what} ({base:#x}..{base + length:#x}) did not "
+            f"read back as erased - first non-0xFF byte at {base + first:#x}\n"
+            "    programming a flash word that is not erased gives PGSERR "
+            "(0x00040000) and\n"
+            "    the rest of the write is dropped silently, so this stops here\n"
+            "    (check pad supply / VCAP caps, power-cycle the pad and retry)\n"
+        )
+        raise SystemExit(4)
+    print(f"blank check: {length // 1024} KiB at {base:#x} reads 0xFF", flush=True)
+
+
+def ram_integrity(phys: int, speed: int, size: int = 0x1000) -> tuple[bool, str]:
+    """Load random bytes into RAM and read them back - the loader has to live there.
+
+    `ram_usable` writes a handful of words this process chose; that passed on
+    the pad while the loader could not run. Code-sized, incompressible data is
+    the honest test.
+    """
+    tmpdir = Path(tempfile.mkdtemp(prefix="stlink_ram_"))
+    src = tmpdir / "pattern.bin"
+    src.write_bytes(os.urandom(size))
+    dst = tmpdir / "back.bin"
+    try:
+        cmds = [
+            f"init; adapter speed {speed}",
+            "catch {reset halt}",
+            f"mdw {DHCSR:#x}",
+            f"load_image {src} {phys:#x} bin",
+            f"dump_image {dst} {phys:#x} {size:#x}",
+            "exit",
+        ]
+        rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 120))
+        if bogus_halt(text):
+            return False, text + "\nBOGUS_HALT\n"
+        if rc != 0 or "Error:" in text or not dst.exists():
+            return False, text
+        return dst.read_bytes() == src.read_bytes(), text
+    finally:
+        for f in tmpdir.glob("*"):
+            f.unlink(missing_ok=True)
+        tmpdir.rmdir()
+
+
+def link_preflight(speed: int) -> None:
+    """Two identical readbacks before anything is erased.
+
+    A link that returns different bytes for the same range twice cannot program
+    a loader into RAM, and every later failure would be a guess. This is the
+    check that would have stopped all four writes that cost us the sector.
+    """
+    if not READBACK_PREFLIGHT:
+        return
+    length = max(0x400, READBACK_BYTES)
+    print(f"preflight: reading {length // 1024 or 1} KiB at {FLASH_BASE:#x} twice...",
+          flush=True)
+    a, text_a = read_flash(FLASH_BASE, length, speed)
+    if a is None:
+        sys.stderr.write(text_a)
+        sys.stderr.write(
+            "FLASH_FAILED readback: the flash cannot be read at all - the link "
+            "is not usable, nothing was erased\n"
+            "    triage: tools/stlink_soak.sh, then re-seat contact, power-cycle "
+            "the pad, check GND/SWCLK/SWDIO and the dongle (dmesg -T -w)\n"
+        )
+        raise SystemExit(3)
+    b, text_b = read_flash(FLASH_BASE, length, speed)
+    if b is None:
+        sys.stderr.write(text_b)
+        sys.stderr.write(
+            "FLASH_FAILED readback: the second readback failed - the link cannot "
+            "carry a sustained transfer, nothing was erased\n"
+            "    a loader is 4 KiB of code and 128 KiB of data over the same "
+            "path; fix the link first\n"
+        )
+        raise SystemExit(3)
+    if a != b:
+        first = next(i for i, (x, y) in enumerate(zip(a, b)) if x != y)
+        sys.stderr.write(
+            "FLASH_FAILED readback: two readbacks of the same range disagree\n"
+            f"    first difference at {FLASH_BASE + first:#x}: {a[first]:#04x} "
+            f"then {b[first]:#04x}\n"
+            "    the link corrupts data, so a write would silently corrupt the "
+            "loader or the image -\n"
+            "    nothing was erased. Check cable/port/dongle; on a blank H7 also "
+            "expect the\n"
+            "    erratum 3092511 bogus halt (pc: 0x00000000) - power-cycle the "
+            "pad and retry.\n"
+        )
+        raise SystemExit(3)
+    print(f"preflight: both readbacks match ({length // 1024 or 1} KiB)", flush=True)
+
+
+def ram_integrity_report(speed: int, needed: int) -> bool:
+    """Walk the RAM regions; warn per region, refuse when none can hold code."""
+    if not RAM_INTEGRITY:
+        return True
+    good: list[str] = []
+    bad: list[str] = []
+    for label, phys, usable in CANDIDATES:
+        if usable < 0x1000:
+            continue
+        ok, text = ram_integrity(phys, speed)
+        if ok:
+            good.append(f"{label} @ {phys:#x}")
+            continue
+        if bogus_halt(text):
+            bad.append(f"{label} @ {phys:#x}: target not halted (erratum 3092511)")
+        elif "Error:" in text:
+            bad.append(f"{label} @ {phys:#x}: {explain(kind_of(text))}")
+        else:
+            bad.append(f"{label} @ {phys:#x}: bytes read back differ")
+    for line in bad:
+        print(f"    RAM integrity FAILED - {line}", flush=True)
+    if good:
+        print(f"    RAM integrity ok - {', '.join(good)}", flush=True)
+
+    if not good:
+        sys.stderr.write(
+            "FLASH_FAILED ram: no RAM region held a 4 KiB random block on "
+            "readback - the flash loader cannot run\n"
+            "    both writers download code into RAM and execute it there, so "
+            "programming\n"
+            "    cannot work while this is true. Nothing was erased.\n"
+            "    triage: power-cycle the pad (a blank H7 halts into erratum "
+            "3092511 with\n"
+            "    pc/msp = 0), re-seat contact, then check cable/port/dongle\n"
+        )
+        raise SystemExit(2)
+    return True
+
+
 # ------------------------------------------------------------------ st-flash backend
 
 def stflash_available() -> bool:
@@ -735,6 +1054,32 @@ def resolve_backend() -> str:
     return "stflash" if stflash_available() else "ocd"
 
 
+def stflash_opts() -> list[str]:
+    """The option block both st-flash verbs use.
+
+    `--connect-under-reset` is the only attach that has ever worked on a blank
+    H7: it holds the core in reset, which avoids both a running image and the
+    erratum-3092511 bogus halt. STLINK_STFLASH_CONNECT=plain drops it for the
+    cases where the AIRCR soft reset fails ("NRST is not connected").
+    """
+    opts: list[str] = []
+    if STFLASH_CONNECT != "plain":
+        opts.append("--connect-under-reset")
+    if STFLASH_FREQ:
+        opts.append(f"--freq={STFLASH_FREQ}")
+    if STFLASH_FLASH:
+        opts.append(f"--flash={STFLASH_FLASH}")
+    return opts
+
+
+def stflash_label() -> str:
+    bits = [f"connect {STFLASH_CONNECT}"]
+    bits.append(f"freq {STFLASH_FREQ}" if STFLASH_FREQ else "freq default")
+    if STFLASH_FLASH:
+        bits.append(f"flash {STFLASH_FLASH}")
+    return ", ".join(bits)
+
+
 def run_stflash(args: list[str], timeout: float = 600) -> tuple[int, str]:
     cmd = [STFLASH] + args
     try:
@@ -747,7 +1092,7 @@ def run_stflash(args: list[str], timeout: float = 600) -> tuple[int, str]:
 
 
 def stflash_erase() -> bool:
-    rc, text = run_stflash(["--connect-under-reset", "erase"], timeout=OCD_TIMEOUT)
+    rc, text = run_stflash(stflash_opts() + ["erase"], timeout=OCD_TIMEOUT)
     low = text.lower()
     ok = rc == 0 and "error" not in low and "fail" not in low
     print(f"  st-flash mass erase: {'ok' if ok else 'FAILED'}", flush=True)
@@ -770,10 +1115,12 @@ def stflash_write(bin_path: Path, addr: int, size: int) -> tuple[bool, str]:
     """
     last = ""
     for attempt in range(1, ATTEMPTS + 1):
+        started = time.monotonic()
         rc, last = run_stflash(
-            ["--connect-under-reset", "write", str(bin_path), f"{addr:#x}"],
+            stflash_opts() + ["write", str(bin_path), f"{addr:#x}"],
             timeout=OCD_TIMEOUT,
         )
+        took = time.monotonic() - started
         low = last.lower()
         ok = rc == 0 and (
             "written and verified" in low
@@ -781,17 +1128,25 @@ def stflash_write(bin_path: Path, addr: int, size: int) -> tuple[bool, str]:
         )
         if ok:
             print(f"  st-flash: {size} bytes written and verified "
-                  f"(attempt {attempt})", flush=True)
+                  f"(attempt {attempt}, {took:.0f}s at {stflash_label()})", flush=True)
             note_log("stflash_ok", last)
             return True, last
-        print(f"    st-flash attempt {attempt}/{ATTEMPTS} failed", flush=True)
+        # Timing next to the clock: a 128 KiB write that takes 8 minutes is not
+        # a slow flash, it is a --freq that cannot carry the data.
+        print(f"    st-flash attempt {attempt}/{ATTEMPTS} failed after "
+              f"{took:.0f}s ({stflash_label()})", flush=True)
         entries = [ln for ln in last.splitlines()
                    if re.search(r"error|fail|warn", ln, re.I)]
         for line in entries[:6]:
             print(f"      {line}", flush=True)
         note_log(f"stflash_attempt{attempt}", last)
+        if took > 60 and size / 1024 / took < 4:
+            print(f"    {size // 1024} KiB in {took:.0f}s is {size / 1024 / took:.1f}"
+                  " KiB/s - too slow to be a flash problem, the SWD clock is the"
+                  " bottleneck; try STLINK_STFLASH_FREQ=25k", flush=True)
         if attempt < ATTEMPTS:
-            time.sleep(min(5.0, 1.5 * attempt))
+            delay = min(15.0, RETRY_DELAY * attempt)
+            time.sleep(delay)
     return False, last
 
 
@@ -820,16 +1175,22 @@ def stinfo_flash_size() -> int | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     text = (proc.stdout or "") + (proc.stderr or "")
-    # st-info prints either `flash: 1024 (pagesize: 131072)` or
-    # `flash: 1024 KiB` depending on the version, so the unit is optional and
-    # the number is always KiB.
     m = None
-    for m in re.finditer(r"flash:\s*(\d+)\s*(?:KiB|kB|k)?\b", text, re.I):
+    for m in re.finditer(r"^\s*flash:\s*(\d+)\s*(KiB|kB|k)?\b", text, re.I | re.M):
         pass
     if not m:
         return None
-    kib = int(m.group(1))
-    return kib * 1024 if kib else None
+    value = int(m.group(1))
+    if not value:
+        return None  # `flash: 0` is a failed probe, not a size
+    # stlink-tools 1.8.0 prints BYTES - `flash: 1048576 (pagesize: 131072)` and
+    # `sram: 131072` for a 1 MiB / 128 KiB part. Older/other builds print KiB.
+    # The smallest H7 flash we care about is 128 KiB, so anything at or above
+    # 64 KiB cannot be a KiB count; an explicit unit wins either way.
+    unit = (m.group(2) or "").lower()
+    if unit in ("kib", "kb", "k"):
+        return value * 1024
+    return value if value >= 0x10000 else value * 1024
 
 
 def release_target(speed: int) -> None:
@@ -849,6 +1210,20 @@ def release_target(speed: int) -> None:
         )
 
 
+def report_partial(details: dict, size: int) -> None:
+    """Say what the flash actually holds - never guess, never round up."""
+    matching = details.get("matching", 0)
+    first = details.get("address")
+    sys.stderr.write(
+        f"    the flash holds {matching} of {size} bytes of this image"
+        + (f"; first difference at {first:#x}" if first is not None else "")
+        + "\n"
+        "    erased and PARTIALLY written - do not treat sector 0 as intact, and "
+        "do not\n"
+        "    power-cycle the board expecting it to boot\n"
+    )
+
+
 def flash_with_stflash() -> None:
     started = time.monotonic()
     tmpdir = Path(tempfile.mkdtemp(prefix="stlink_flash_"))
@@ -865,41 +1240,76 @@ def flash_with_stflash() -> None:
                     f"{explain('stflash')}\n" + damage_note()
                 )
                 raise SystemExit(3)
+            if BLANK_CHECK and len(image) <= 0x20000:
+                blank_check(flash_base, len(image), SPEED)
 
         ok, last = stflash_write(bin_path, flash_base, len(image))
-        if not ok:
-            TOUCHED.append(f"pages {flash_base:#x}..{end:#x} (st-flash erased them)")
-            sys.stderr.write(last)
+
+        # The verdict is the readback, not st-flash's exit status: it exits
+        # non-zero *after* writing every byte ("131072/131072 bytes written" +
+        # PGSERR), and it exits 0 while lying less often but not never.
+        state, details = verify_readback(flash_base, image, SPEED)
+        if state == "unreadable":
+            sys.stderr.write(details.get("text", ""))
             sys.stderr.write(
-                f"FLASH_FAILED stflash: st-flash could not write "
-                f"{flash_base:#x}..{end:#x} - {explain('stflash')}\n"
+                f"FLASH_FAILED readback: could not read {flash_base:#x}..{end:#x} "
+                "back - the flash state is UNKNOWN\n"
                 + damage_note()
-                + "    triage: re-run the same command (it succeeds on a retry "
-                "when the dongle stays up),\n"
-                "    watch `dmesg -T -w | grep -iE \"usb|stlink\"` for resets\n"
+                + "    a readback that fails is not a mismatch: the link could "
+                "not produce the bytes.\n"
+                "    On a blank H7 this is usually erratum 3092511 (bogus halt, "
+                "pc/msp = 0):\n"
+                "    power-cycle the pad, then retry with "
+                "STLINK_STFLASH_CONNECT=under-reset.\n"
             )
+            note_log("readback_failed", details.get("text", ""), "    ")
             raise SystemExit(3)
 
-        if VERIFY_OCD and shutil.which(OPENOCD):
-            print("verifying with OpenOCD's readback...", flush=True)
-            ok, text = ocd_verify_image(bin_path, flash_base, SPEED)
-            if not ok:
-                sys.stderr.write(text)
+        if not ok and state == "partial":
+            TOUCHED.append(f"pages {flash_base:#x}..{end:#x} (erased, partially written)")
+            sys.stderr.write(last)
+            sys.stderr.write(
+                f"FLASH_FAILED {kind_of(last) if kind_of(last) != 'unknown' else 'stflash'}: "
+                f"st-flash could not write {flash_base:#x}..{end:#x} - "
+                f"{explain(kind_of(last) if kind_of(last) != 'unknown' else 'stflash')}\n"
+                + damage_note()
+            )
+            report_partial(details, len(image))
+            if "0x00040000" in last or "programming error" in last.lower():
                 sys.stderr.write(
-                    "FLASH_FAILED verify: the readback does not match the image "
-                    "- st-flash claimed success; trust this, not it\n"
+                    "    0x00040000 is PGSERR: the flash word was not cleanly "
+                    "erased or the program\n"
+                    "    sequence was torn down. Erase first "
+                    "(STLINK_MASS_ERASE=1), power-cycle the pad and\n"
+                    "    retry; if it repeats, the dongle or the supply is at "
+                    "fault, not the flash.\n"
                 )
-                note_log("verify", text, "    ")
-                raise SystemExit(3)
-            print("Verified OK", flush=True)
+            raise SystemExit(3)
 
+        if not ok:
+            # st-flash failed, but the image is in the flash. Say so instead of
+            # failing a write that worked.
+            print("    st-flash reported failure, but the readback matches the image",
+                  flush=True)
+        if state != "ok":
+            sys.stderr.write(details.get("text", ""))
+            sys.stderr.write(
+                f"FLASH_FAILED verify: readback differs from the image - "
+                f"{explain('verify')}\n"
+            )
+            report_partial(details, len(image))
+            note_log("verify", details.get("text", ""), "    ")
+            raise SystemExit(3)
+
+        print("Verified OK", flush=True)
         TOUCHED.clear()  # every page that was erased is now written and verified
         release_target(SPEED)
 
         elapsed = time.monotonic() - started
         print(
             f"FLASH_OK {len(image)} bytes @ {flash_base:#x} backend stflash "
-            f"speed {SPEED} kHz in {elapsed:.1f}s ({SESSIONS} log(s) in {LOG_DIR})",
+            f"({stflash_label()}) speed {SPEED} kHz in {elapsed:.1f}s "
+            f"({SESSIONS} log(s) in {LOG_DIR})",
             flush=True,
         )
     finally:
@@ -997,6 +1407,12 @@ if PROBE_SIZE:
 # does not (see quirk 4). st-flash can boot the loader itself, so it writes.
 backend = resolve_backend()
 print(f"backend: {backend}", flush=True)
+
+# Nothing below this line may erase without a link that has proven it can carry
+# bytes both ways: two identical readbacks, and a RAM region that holds a 4 KiB
+# random block (both loaders run from RAM).
+link_preflight(speed)
+ram_integrity_report(speed, WA_SIZE)
 
 if backend == "stflash":
     if not stflash_available():
@@ -1123,6 +1539,8 @@ try:
         ]
         rc, text = run_openocd_connect(cmds, timeout=OCD_TIMEOUT * 2)
         TOUCHED.append("whole flash (mass erase)")
+        if rc == 0 and "mass erase complete" in text.lower() and len(image) <= 0x20000:
+            blank_check(flash_base, len(image), speed)
         if "mass erase complete" not in text.lower():
             sys.stderr.write(text)
             sys.stderr.write(
@@ -1244,6 +1662,14 @@ try:
                 f"FLASH_FAILED {kind}: sector {n} @ {addr:#x} - {explain(kind)}\n"
                 + damage_note()
             )
+            state, details = verify_readback(flash_base, image, speed)
+            if state == "partial":
+                report_partial(details, len(image))
+            elif state == "unreadable":
+                sys.stderr.write(
+                    "    the flash could not be read back, so its contents are "
+                    "unknown - do not assume either state\n"
+                )
             raise SystemExit(3)
 
         done += len(piece)

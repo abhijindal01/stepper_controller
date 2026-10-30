@@ -131,6 +131,14 @@ Knobs (environment):
 | `STLINK_VERIFY_OCD` | `1` | Verify the written image with OpenOCD's readback |
 | `STLINK_LOG_DIR` | `/tmp` | Where per-session logs (`stlink_flash_*.log`) are kept |
 | `STLINK_KEEP_LOGS` | `1` | Keep those logs (`0` = only print them) |
+| `STLINK_STFLASH_CONNECT` | `under-reset` | `plain` drops `--connect-under-reset` (the only attach that works on a blank H7) |
+| `STLINK_STFLASH_FREQ` | unset | `st-flash --freq=` (`25k`, `5k`) when programming errors appear |
+| `STLINK_STFLASH_FLASH` | unset | `st-flash --flash=` (`1M`) when the size probe is marginal |
+| `STLINK_RETRY_DELAY` | `2` | Base seconds between `st-flash` attempts (grows 2, 4, 6 … capped at 15) |
+| `STLINK_READBACK_PREFLIGHT` | `1` | Require two identical readbacks before any erase |
+| `STLINK_READBACK_BYTES` | `0x2000` | Size of the preflight readback |
+| `STLINK_BLANK_CHECK` | `1` | After an erase (mass erase / st-flash page erase) require the range to read `0xFF` |
+| `STLINK_RAM_INTEGRITY` | `1` | Load a 4 KiB random block into each RAM region and read it back |
 
 ### First: is the SWD link healthy?
 
@@ -366,6 +374,13 @@ the rest of the image with it.
 | `error while writing to address 0x5200200c` + `error during the lock of flash` + `Error closing APs` | the AP dies exactly when FLASH_CR is programmed: **brownout / reset during programming**, not a tool bug | reported as `FLASH_FAILED brownout:`; check pad supply, GND return, bulk capacitance, de-energise the steppers, re-seat and retry |
 | `WARN common.c: NRST is not connected`, `ERROR Soft reset failed: error write to AIRCR`, `Failed to enter SWD mode` | `st-flash` could not reset into SWD (clone dongle re-enumerated, or no contact) | retry - the same command succeeds minutes later; `dmesg -T -w` shows the USB resets (grep for `usb`/`stlink`) |
 | `FLASH_FAILED stflash:` | `st-flash` failed to write on every attempt | re-run, then `tools/stlink_recover.sh`; move the dongle to a powered hub / direct USB2 port |
+| `Flash programming error: 0x00040000` + `stlink_fwrite_flash() == -1` after `131072/131072 bytes written` | `PGSERR`: the flash word was not cleanly erased or the program was torn down; the rest of the write is dropped silently | `brownout` class. Erase first, power-cycle, retry; check supply/VCAP |
+| `Error: Failed to read memory at 0x0801d7c8` during a verify | the readback could not happen (ECC bus error from half-programmed words, or the link) | `FLASH_FAILED readback:` — contents **unknown**, not mismatched; erase the page before diagnosing further |
+| `two readbacks of the same range disagree` | the link corrupts data it reads | nothing was erased; cable/port/dongle, then power-cycle |
+| `no RAM region held a 4 KiB random block` | neither writer can run its loader | nothing was erased; power-cycle (erratum 3092511) and re-seat contact |
+| `halted … pc: 0x00000000 msp: 0x00000000` | erratum 3092511 bogus halt on a blank part | `FLASH_FAILED halt:`; power-cycle, then `STLINK_BACKEND=stflash` |
+| `did not read back as erased` | the erase did not blank the range, so the program will `PGSERR` | supply/VCAP, power-cycle, retry |
+| `st-info reports … KiB` reading 1024× too large | `st-info` 1.8.0 prints **bytes** (`flash: 1048576`) | fixed: the size is converted, and both spellings are accepted |
 
 Exit codes / markers from the wrapper: `0` ok (`FLASH_OK ...`),
 `1` usage or image-range error (including an image that does not fit the
@@ -483,6 +498,63 @@ With `STLINK_BACKEND=ocd` the same knob runs `stm32h7x mass_erase 0` after a
 confirmed `reset halt`. Both paths record `whole flash (mass erase)` in
 `erased but NOT written:` if the write afterwards fails, so a blank board is
 never reported as "nothing was erased".
+
+### Verdicts are measurements, not exit codes
+
+Every tool on this fixture lies in a different direction, so the flash is read
+back and *compared* before anything is claimed:
+
+| Outcome | Meaning | Exit |
+|---------|---------|------|
+| `FLASH_OK …` | readback equals the image byte for byte | `0` |
+| `FLASH_FAILED … partially written` | readback differs; the message says how many bytes of the image are present and where the first difference is | `3` |
+| `FLASH_FAILED readback: …` | the flash could not be read back at all — its contents are **unknown**, which is not the same as wrong | `3` |
+
+`st-flash` produced all three shapes on 2026-10-29/30: `131072/131072 bytes
+written` followed by `ERROR common_flash.c: Flash programming error: 0x00040000`
+(`PGSERR`) and `stlink_fwrite_flash() == -1`, an OpenOCD readback that died with
+`Error: Failed to read memory at 0x0801d7c8`, and two dumps of the same range
+that disagreed. Treating any of those as "the writer said yes" is how a blank
+sector 0 gets reported as a successful flash.
+
+Three checks now run **before anything is erased**:
+
+1. **Sustained readback** (`STLINK_READBACK_PREFLIGHT`) — read 8 KiB twice and
+   compare. A link that returns different bytes twice cannot carry a 4 KiB
+   loader plus 128 KiB of image. Failure: exit 3, *nothing erased*.
+2. **Loader RAM integrity** (`STLINK_RAM_INTEGRITY`) — `load_image` a 4 KiB
+   random block into each of AXI SRAM / SRAM1 / SRAM4 / DTCM, `dump_image` it
+   back and compare. Both writers execute code from RAM, so "RAM holds code" is
+   a precondition, not a diagnostic. One good region is enough (it is reported);
+   none ⇒ exit 2, nothing erased. `ram_usable`'s word probe alone once passed
+   while the loader could not run — code-sized incompressible data is the honest
+   test.
+3. **Blank check** (`STLINK_BLANK_CHECK`) — after an erase, the range must read
+   `0xFF` before a program is attempted. H7 raises `PGSERR` when a flash word is
+   programmed without being erased, and then silently drops the rest of the
+   write: `131072/131072 bytes written` with only ~1.4 KiB actually in the flash
+   is exactly that.
+
+### Erratum 3092511: a halt that never happened
+
+A blank H7 halts into erratum 3092511, which OpenOCD reports as:
+
+```text
+halted due to debug-request, current mode: Thread
+xPSR: 0x00000000 pc: 0x00000000 msp: 0x00000000
+Error: unknown/unexpected STLINK status code 0x12
+Error: Failed to write memory at 0x24000c00
+```
+
+`DHCSR` claims `S_HALT`, the register dump says `pc = msp = 0`, and every access
+after it fails — including `load_image` and every loader download. The wrapper
+rejects such a session (`FLASH_FAILED halt: … erratum 3092511`), retries with
+fresh `reset halt`, and never converts its zeros into a RAM verdict.
+
+The cure on a blank part is `STLINK_BACKEND=stflash`: `--connect-under-reset`
+holds the core while it connects, which is the one attach that has ever worked
+here. On the pad the sequence that mattered was: power-cycle, then
+`st-flash --connect-under-reset …` immediately.
 
 ### Recovery: put sector 0 back
 

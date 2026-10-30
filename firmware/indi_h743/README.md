@@ -64,8 +64,16 @@ If that fails, the escalation ladder is `../tools/stlink_recover.sh`:
 It retries `st-flash --connect-under-reset` (the only writer that has ever
 completed on this board), falls back to CubeProgrammer and then OpenOCD, and
 judges the result with OpenOCD's readback - `st-flash` says "jolly good!" and is
-occasionally wrong. `RECOVER_OK` or nothing. Keep a copy of the bootloader
-outside the pad: it is the one thing an erase cannot bring back.
+occasionally wrong, and it also says `131072/131072 bytes written` *and* fails.
+`RECOVER_OK` or nothing. Keep a copy of the bootloader outside the pad: it is
+the one thing an erase cannot bring back.
+
+`tools/stlink_flash.sh` runs the same checks first and refuses to erase if they
+fail: two identical readbacks of the same range (a link that corrupts reads
+cannot carry a loader), a 4 KiB random block loaded into RAM and read back (both
+writers execute from RAM), and after any erase, a blank check. If the pad is
+brand new to a failure, power-cycle it first: a blank H7 halts into erratum
+3092511 (`pc = msp = 0`) and every access from that state fails.
 
 Then check the board: `../tools/stlink_probe.sh` and `openocd ... -c "init;
 mdw 0x08000000; exit"` must return a stack pointer inside RAM
