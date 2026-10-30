@@ -150,7 +150,8 @@ run_flash() {  # run_flash <label> <expected-rc> [env assignments...]
     shift 2
     local out rc
     rm -f "$OCD_LOG"
-    out="$(env PATH="$HERE/stubs:$PATH" "$@" \
+    rm -rf "$TMP_FLASH/mem"
+    out="$(env PATH="$HERE/stubs:$PATH" STUB_MEM_DIR="$TMP_FLASH/mem" "$@" \
         bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_HEX" 2>&1)"
     rc=$?
     printf '%s' "$out" > "$TMP_FLASH/last.log"
@@ -188,10 +189,10 @@ if grep -q "work-area-phys 0x24000000" "$OCD_LOG" 2>/dev/null; then
 else
     fail "flash configures the AXI SRAM work area"
 fi
-if grep -q "0x20000000" "$OCD_LOG" 2>/dev/null; then
-    fail "flash never touches the DTCM work area"
+if grep -q "work-area-phys 0x20000000" "$OCD_LOG" 2>/dev/null; then
+    fail "DTCM is never used as the loader work area"
 else
-    pass "flash never touches the DTCM work area"
+    pass "DTCM is never used as the loader work area"
 fi
 if grep -q "mdw 0xe000edf0" "$OCD_LOG" 2>/dev/null; then
     pass "flash confirms the halt via DHCSR"
@@ -231,9 +232,9 @@ else
 fi
 
 run_flash "forced dead work area fails" 2 \
-    STUB_RAM_FAULT=0x20000000,0x24000000,0x30000000,0x38000000 \
-    STLINK_WORKAREA=0x24000000
+    STUB_RAM_FAULT=0x24000000 STLINK_WORKAREA=0x24000000
 expect_log "dead work area reports why" "not writable"
+expect_log "the integrity walk noticed it first" "RAM integrity FAILED - AXI SRAM (D1)"
 
 # ------------------------------------------------------------- halt behaviour
 run_flash "halt that does not stick is reported" 4 STUB_HALT_FAIL=1 STLINK_HALT_TRIES=1
@@ -480,7 +481,9 @@ run_sflash() {  # run_sflash <label> [expected-rc] [env assignments...]
     if [ "$#" -ge 2 ]; then shift 2; else shift 1; fi
     local out rc
     rm -f "$OCD_LOG" "$SFLASH_LOG"
+    rm -rf "$TMP_FLASH/mem"
     out="$(env PATH="$SFLASH_PATH:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
+        STUB_MEM_DIR="$TMP_FLASH/mem" \
         STUB_STFLASH_LOG="$SFLASH_LOG" "$@" \
         bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_HEX" 2>&1)"
     rc=$?
@@ -498,7 +501,9 @@ run_flash_with_image() {  # run_flash_with_image <label> <want> <image> [env...]
     shift 3
     local out rc
     rm -f "$OCD_LOG" "$SFLASH_LOG"
+    rm -rf "$TMP_FLASH/mem"
     out="$(env PATH="$SFLASH_PATH:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
+        STUB_MEM_DIR="$TMP_FLASH/mem" \
         STUB_STFLASH_LOG="$SFLASH_LOG" "$@" \
         bash "$ROOT/tools/stlink_flash.sh" "$img" 2>&1)"
     rc=$?
@@ -523,10 +528,10 @@ if grep -q "st-flash --connect-under-reset write" "$SFLASH_LOG" 2>/dev/null; the
 else
     fail "the image really went to st-flash"
 fi
-if grep -q "verify_image" "$OCD_LOG" 2>/dev/null; then
-    pass "the writer does not vote: OpenOCD verified the image"
+if grep -q "dump_image" "$OCD_LOG" 2>/dev/null; then
+    pass "the writer does not vote: OpenOCD read the image back"
 else
-    fail "the writer does not vote: OpenOCD verified the image"
+    fail "the writer does not vote: OpenOCD read the image back"
 fi
 
 # The dongle on the pad fails the first `--connect-under-reset` and succeeds on
@@ -657,7 +662,8 @@ run_recover() {  # run_recover <label> <expected-rc> [env assignments...]
     local label="$1" want="$2"
     shift 2
     local out rc
-    out="$(env PATH="$SFLASH_PATH:$PATH" "$@" \
+    rm -rf "$TMP_FLASH/mem"
+    out="$(env PATH="$SFLASH_PATH:$PATH" STUB_MEM_DIR="$TMP_FLASH/mem" "$@" \
         bash "$ROOT/tools/stlink_recover.sh" "$IMAGE_BIN" 0x08000000 2>&1)"
     rc=$?
     printf '%s' "$out" > "$TMP_FLASH/last.log"
@@ -708,7 +714,7 @@ fi
 expect_log "no-halt advice names the pogos" "jog forward"
 reject_log "no write happens without a halt" "connect-under-reset write"
 
-OUT="$(env PATH="$SFLASH_PATH:$PATH" STUB_HALT_FAIL=1 \
+OUT="$(env PATH="$SFLASH_PATH:$PATH" STUB_MEM_DIR="$TMP_FLASH/mem" STUB_HALT_FAIL=1 \
     bash "$ROOT/tools/stlink_recover.sh" "$IMAGE_BIN" 2>&1)"
 printf '%s' "$OUT" > "$TMP_FLASH/last.log"
 if printf '%s' "$OUT" | grep -q "st-flash --connect-under-reset write"; then
@@ -725,6 +731,98 @@ if [ "$RC" = "0" ] && printf '%s' "$OUT" | grep -q "\[dry-run\]"; then
     pass "recovery --dry-run plans without writing"
 else
     fail "recovery --dry-run plans without writing (exit $RC)"
+fi
+
+# ------------------------------------- verdicts are measurements, not exit codes
+# The pad produced "131072/131072 bytes written" + PGSERR, an OpenOCD readback
+# that failed with a bus error, and two dumps of the same range that disagreed.
+# Each of those needs its own verdict, and none of them may erase anything.
+printf '\nVerdicts, preflight and loader-RAM checks\n'
+
+# st-info 1.8.0 prints BYTES: `flash: 1048576` for a 1 MiB part, `sram: 131072`.
+run_sflash "st-info's byte count is converted, not multiplied" 0
+expect_log "st-info size is reported in KiB" "st-info reports 1024 KiB"
+
+run_sflash "a KiB-style st-info line still works" 0 STUB_STINFO_UNIT_KIB=1
+expect_log "the KiB form parses to the same size" "st-info reports 1024 KiB"
+
+# ---------------------------------------------------------------- preflight
+run_sflash "two identical readbacks gate the flash" 0
+expect_log "the preflight runs before anything else" "preflight: both readbacks match"
+
+run_sflash "a link that corrupts reads is refused" 3 STUB_DUMP_UNSTABLE=1
+expect_log "the disagreement is named" "two readbacks of the same range disagree"
+expect_log "the corruption is located" "first difference at 0x8000010"
+expect_log "nothing is erased" "nothing was erased"
+if grep -q "connect-under-reset write" "$SFLASH_LOG" 2>/dev/null; then
+    fail "an unstable readback writes nothing (st-flash write ran)"
+else
+    pass "an unstable readback writes nothing"
+fi
+
+run_sflash "a flash that cannot be read is refused" 3 STUB_DUMP_FAIL_AT=0x08000040
+expect_log "an unreadable flash is not a mismatch" "cannot be read at all"
+expect_log "the link is blamed, not the image" "the link is not usable"
+
+# ------------------------------------------------------ loader RAM integrity
+run_sflash "the loader RAM is tested with code-sized data" 0
+expect_log "the RAM walk reports what held" "RAM integrity ok - AXI SRAM"
+
+run_sflash "no usable loader RAM stops the flash" 2 \
+    STUB_RAM_FAULT=0x20000000,0x24000000,0x30000000,0x38000000
+expect_log "the verdict is about RAM" "no RAM region held a 4 KiB random block"
+expect_log "the consequence is spelled out" "Nothing was erased"
+expect_log "the power cycle is suggested" "power-cycle the pad"
+
+# -------------------------------------------- erratum 3092511 is not a halt
+run_sflash "a bogus halt is rejected" 4 STUB_BOGUS_HALT=1 STLINK_HALT_TRIES=1
+expect_log "the erratum is named" "erratum 3092511"
+expect_log "the workaround is named" "STLINK_BACKEND=stflash"
+reject_log "a bogus halt never reaches the flash" "FLASH_OK"
+
+# ------------------------------------------------------------- blank check
+run_sflash "the erase is checked for real blanking" 0 STLINK_MASS_ERASE=1
+expect_log "the blank check runs" "blank check:"
+
+run_sflash "an erase that leaves a byte is caught" 4 STLINK_MASS_ERASE=1 \
+    STUB_ERASE_INCOMPLETE=1
+expect_log "the incomplete erase is named" "did not read back as erased"
+expect_log "PGSERR is explained" "PGSERR"
+if grep -q "connect-under-reset write" "$SFLASH_LOG" 2>/dev/null; then
+    fail "nothing is written after a failed blank check"
+else
+    pass "nothing is written after a failed blank check"
+fi
+
+# ------------------------------------------------- what the flash really holds
+run_sflash "a partial program is measured, not guessed" 3 STUB_STFLASH_PARTIAL=0x100
+expect_log "the damage is counted" "the flash holds"
+expect_log "the count is against the whole image" "of 1280 bytes of this image"
+expect_log "the first difference is located" "first difference at 0x8000100"
+expect_log "the state is named" "PARTIALLY written"
+expect_log "it is a failure" "FLASH_FAILED"
+
+run_sflash "a writer that lies about a good flash is not a failure" 0 \
+    STUB_STFLASH_PGSERR=1
+expect_log "the lie is named" "st-flash reported failure, but the readback matches"
+expect_log "the flash is still OK" "FLASH_OK"
+
+# ------------------------------------------------------- st-flash knobs
+run_sflash "st-flash frequency and size reach the command" 0 \
+    STLINK_STFLASH_FREQ=25k STLINK_STFLASH_FLASH=1M
+if grep -q -- "--freq=25k" "$SFLASH_LOG" 2>/dev/null &&
+    grep -q -- "--flash=1M" "$SFLASH_LOG" 2>/dev/null; then
+    pass "st-flash gets --freq and --flash"
+else
+    fail "st-flash gets --freq and --flash"
+fi
+expect_log "the label reports the clock" "freq 25k"
+
+run_sflash "plain attach is available" 0 STLINK_STFLASH_CONNECT=plain
+if grep -q "connect-under-reset" "$SFLASH_LOG" 2>/dev/null; then
+    fail "plain attach omits --connect-under-reset"
+else
+    pass "plain attach omits --connect-under-reset"
 fi
 
 rm -rf "$TMP_FLASH"

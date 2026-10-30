@@ -183,6 +183,14 @@ FLASH_FAILURE_KINDS = {
         "The flash loader failed while writing - check the image base address "
         "and SWD speed.",
     ),
+    "readback": (
+        3,
+        "verify_unreadable",
+        "The flash could not be read back at all, so what it holds is "
+        "unknown - that is a link failure, not a mismatch. On a blank H7 it "
+        "is usually erratum 3092511 (a halt with pc/msp = 0): power-cycle the "
+        "pad and retry with STLINK_BACKEND=stflash.",
+    ),
     "verify": (
         4,
         "verify_fail",
@@ -192,12 +200,15 @@ FLASH_FAILURE_KINDS = {
     "brownout": (
         4,
         "brownout",
-        "The target dropped off SWD the moment the flash controller was "
-        "programmed (FLASH_CR 0x5200200C) - that is a brownout or a reset "
-        "during programming, not a tool problem. Check the pad supply, the "
-        "GND return and bulk capacitance, power-cycle the pad, then retry. "
-        "Emulated by OpenOCD as \"error during the lock of flash\" + "
-        "\"Error closing APs\".",
+        "The program was torn down: the target dropped off SWD when the flash "
+        "controller was programmed (FLASH_CR 0x5200200C, \"error during the "
+        "lock of flash\", \"Error closing APs\"), or the flash controller "
+        "raised PGSERR (0x00040000) after \"st-flash\" streamed every byte. "
+        "Both are a brownout or reset during programming, not a tool problem: "
+        "the word was not cleanly erased or the supply disturbed the program. "
+        "Check pad supply, GND return and VCAP caps, "
+        "erase before writing (STLINK_MASS_ERASE=1), power-cycle the pad, then "
+        "retry.",
     ),
     "stflash": (
         4,

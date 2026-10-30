@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Fake `st-info --probe` for tests/check_scripts.sh.
 
-STUB_STINFO_FLASH_KB  flash size reported (default 1024)
+STUB_STINFO_FLASH_KB  flash size reported (default 1024); printed in BYTES like
+                      stlink-tools 1.8.0 does (`flash: 1048576` for a 1 MiB part)
+STUB_STINFO_UNIT_KIB  1 = print the size in KiB instead (`flash: 1024`)
 STUB_STINFO_FAIL      1 = no target found (chipid 0x000), like the real dongle
 """
 
@@ -21,7 +23,10 @@ if os.environ.get("STUB_STINFO_FAIL") == "1":
     print("Failed to enter SWD mode", file=sys.stderr)
     raise SystemExit(1)
 
-print(f"  flash:      {flash_kb} (pagesize: 131072)")
+if os.environ.get("STUB_STINFO_UNIT_KIB") == "1":
+    print(f"  flash:      {flash_kb} (pagesize: 131072)")
+else:
+    print(f"  flash:      {flash_kb * 1024} (pagesize: 131072)")
 print("  sram:       131072")
 print("  chipid:     0x450")
 print("  dev-type:   STM32H74x_H75x")

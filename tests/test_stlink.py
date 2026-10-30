@@ -239,6 +239,32 @@ class ClassifierTest(unittest.TestCase):
         self.assertIn("brownout", r["hint"].lower())
         self.assertIn("0x5200200C", r["hint"])
 
+    def test_pgserr_is_a_brownout(self):
+        # st-flash's own signature: every byte streamed, then PGSERR. The write
+        # is not a link failure and not a verify failure - the program was torn
+        # down after the data was sent.
+        text = STLINK_BANNER + (
+            "131072/131072 bytes written\n"
+            "ERROR common_flash.c: Flash programming error: 0x00040000\n"
+            "stlink_fwrite_flash() == -1\n"
+            "FLASH_FAILED brownout: st-flash could not write 0x8000000..0x8020000\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "brownout")
+        self.assertIn("PGSERR", r["hint"])
+
+    def test_unreadable_readback_is_not_a_mismatch(self):
+        text = STLINK_BANNER + (
+            "Error: Failed to read memory at 0x0801d7c8\n"
+            "FLASH_FAILED readback: could not read 0x8000000..0x8020000 back - "
+            "the flash state is UNKNOWN\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "verify_unreadable")
+        self.assertEqual(r["code"], 3)
+        self.assertFalse(r["ok"])
+        self.assertIn("unknown", r["hint"].lower())
+
     def test_brownout_is_retryable(self):
         self.assertIn("brownout", stlink.TRANSIENT_STATES)
 
