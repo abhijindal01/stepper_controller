@@ -280,6 +280,28 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(r["code"], 4)
         self.assertIn("st-flash", r["hint"])
 
+    def test_image_past_sector0_has_no_writer(self):
+        text = STLINK_BANNER + (
+            "backend: direct\n"
+            "FLASH_FAILED nowriter: the image spans 0x8000000..0x8040000, but "
+            "the only writer that works on this fixture (the direct writer) "
+            "only knows sector 0 (0x08000000..0x08020000) - nothing was erased\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "no_writer")
+        self.assertEqual(r["code"], 5)
+        self.assertIn("sector 0", r["hint"])
+
+    def test_direct_writer_failure_is_named(self):
+        text = STLINK_BANNER + (
+            "backend: direct\n"
+            "    ABORT: cannot read ['0x8000000'] reliably - link too poor.\n"
+            "FLASH_FAILED direct: the word-by-word writer stopped\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "flash_fail")
+        self.assertIn("never programs a word twice", r["hint"])
+
     def test_stflash_success_is_ok(self):
         text = STLINK_BANNER + (
             "backend: stflash\n"

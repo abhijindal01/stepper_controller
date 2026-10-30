@@ -159,10 +159,10 @@ TMP_FLASH="$(mktemp -d)"
 IMAGE_HEX="$TMP_FLASH/combined.hex"
 IMAGE_BIN="$TMP_FLASH/combined.bin"
 OCD_LOG="$TMP_FLASH/ocd.log"
-# The image below fits sector 0, which `auto` now hands to the direct writer.
-# Point it at nothing so these tests keep exercising st-flash/OpenOCD; the
-# direct backend has its own section further down.
-export STLINK_DIRECT_WRITER="$TMP_FLASH/no-direct-writer"
+# `auto` is the direct writer (the only one that works on the pad); a stub
+# stands in for it and writes the fake OpenOCD's flash.
+DIRECT_STUB="$HERE/stubs/direct/h7_robust_write.py"
+export STLINK_DIRECT_WRITER="$DIRECT_STUB"
 
 python3 - "$IMAGE_BIN" "$IMAGE_HEX" <<'PY'
 import sys
@@ -221,19 +221,9 @@ reject_log() {  # reject_log <label> <pattern>
 }
 
 # ---------------------------------------------------------------- healthy target
-run_flash "flash uses a writable work area" 0 STUB_OPENOCD_LOG="$OCD_LOG"
+run_flash "a healthy target flashes" 0 STUB_OPENOCD_LOG="$OCD_LOG"
 expect_log "flash reports FLASH_OK" "FLASH_OK"
 expect_log "flash halts the core out of reset" "target halted out of reset"
-if grep -q "work-area-phys 0x24000000" "$OCD_LOG" 2>/dev/null; then
-    pass "flash configures the AXI SRAM work area"
-else
-    fail "flash configures the AXI SRAM work area"
-fi
-if grep -q "work-area-phys 0x20000000" "$OCD_LOG" 2>/dev/null; then
-    fail "DTCM is never used as the loader work area"
-else
-    pass "DTCM is never used as the loader work area"
-fi
 if grep -q "mdw 0xe000edf0" "$OCD_LOG" 2>/dev/null; then
     pass "flash confirms the halt via DHCSR"
 else
@@ -244,37 +234,7 @@ if grep -q "reset halt" "$OCD_LOG" 2>/dev/null; then
 else
     fail "flash erases only after reset halt"
 fi
-if grep -q "0x20000200" "$OCD_LOG" 2>/dev/null; then
-    fail "flash sets no DTCM trampoline"
-else
-    pass "flash sets no DTCM trampoline"
-fi
 expect_log "flash releases the target after verify" "reset run"
-
-# ------------------------------------------------------- loader RAM fallbacks
-run_flash "flash survives dead DTCM" 0 STUB_RAM_FAULT=0x20000000
-expect_log "dead DTCM still reaches FLASH_OK" "FLASH_OK"
-
-run_flash "flash falls back to SRAM1" 0 STUB_RAM_FAULT=0x20000000,0x24000000 \
-    STUB_OPENOCD_LOG="$OCD_LOG"
-if grep -q "work-area-phys 0x30000000" "$OCD_LOG" 2>/dev/null; then
-    pass "fallback uses SRAM1"
-else
-    fail "fallback uses SRAM1"
-fi
-
-run_flash "flash falls back to SRAM4" 0 \
-    STUB_RAM_FAULT=0x20000000,0x24000000,0x30000000 STUB_OPENOCD_LOG="$OCD_LOG"
-if grep -q "work-area-phys 0x38000000" "$OCD_LOG" 2>/dev/null; then
-    pass "fallback uses SRAM4"
-else
-    fail "fallback uses SRAM4"
-fi
-
-run_flash "forced dead work area fails" 2 \
-    STUB_RAM_FAULT=0x24000000 STLINK_WORKAREA=0x24000000
-expect_log "dead work area reports why" "not writable"
-expect_log "the integrity walk noticed it first" "RAM integrity FAILED - AXI SRAM (D1)"
 
 # ------------------------------------------------------------- halt behaviour
 run_flash "halt that does not stick is reported" 4 STUB_HALT_FAIL=1 STLINK_HALT_TRIES=1
@@ -285,15 +245,7 @@ reject_log "nothing is erased without a confirmed halt" "erased address"
 run_flash "plain halt fallback works" 0 STLINK_RESET_HALT=0
 expect_log "plain halt path still flashes" "FLASH_OK"
 
-# ------------------------------------------------------------- erase behaviour
-run_flash "erase timeout is reported" 3 STUB_ERASE_FAIL=1 STLINK_ATTEMPTS=2
-expect_log "erase failure says erase" "FLASH_FAILED erase"
-expect_log "erase retry slows SWD down" "lowering adapter speed"
-
-run_flash "target dropping off SWD is reported" 3 STUB_DROP_AFTER=erase \
-    STLINK_ATTEMPTS=2 STLINK_HALT_TRIES=1
-expect_log "loss of SWD says swd" "FLASH_FAILED swd"
-
+# ------------------------------------------------------------- no contact
 run_flash "no SWD contact is reported" 3 STUB_SWD_FAIL=1 STLINK_HALT_TRIES=1
 expect_log "no SWD reports swd" "FLASH_FAILED swd"
 
@@ -302,12 +254,6 @@ run_flash "dead core debug registers are reported" 3 STUB_AP_FAIL=1
 expect_log "AP failure is named as ap" "FLASH_FAILED ap"
 expect_log "AP failure mentions debug registers" "debug registers"
 reject_log "nothing is erased with a dead AP" "erased address"
-
-# --------------------------------------------- link health measured, not guessed
-run_flash "link dying in the RAM probe aborts" 2 STUB_DROP_ON_RAM=1
-expect_log "unhealthy link is reported" "SWD link unhealthy"
-expect_log "unhealthy link points at the soak tool" "stlink_soak.sh"
-reject_log "no RAM region is accepted on a dying link" "RAM check ok"
 
 # ------------------------------------------- marginal link needs a slow clock
 run_flash "too-fast SWD cannot connect" 3 STUB_SPEED_MAX=25 \
@@ -368,20 +314,6 @@ else
     printf '%s\n' "$SOAK_OUT" | tail -12
 fi
 
-# ------------------------------------------------------ speed ladder goes slow
-run_flash "erase failure walks the speed ladder down" 3 STUB_ERASE_FAIL=1 \
-    STLINK_ATTEMPTS=4
-if grep -q "lowering adapter speed to 25 kHz" "$TMP_FLASH/last.log"; then
-    pass "ladder reaches 25 kHz"
-else
-    fail "ladder reaches 25 kHz"
-fi
-if grep -q "lowering adapter speed to 12 kHz" "$TMP_FLASH/last.log"; then
-    pass "ladder reaches the 12 kHz floor"
-else
-    fail "ladder reaches the 12 kHz floor"
-fi
-
 # --------------------------------------------------------------- guard rails
 OUT="$(env PATH="$HERE/stubs:$PATH" bash "$ROOT/tools/stlink_flash.sh" \
     "$IMAGE_BIN" 0x20000000 2>&1)"
@@ -392,73 +324,13 @@ else
     fail "flash refuses out-of-flash base (exit $RC)"
 fi
 
-# ------------------------------------- work area: probe the loader footprint
-# The fault seen on the pad: AXI SRAM answers a word at its base, so the old
-# two-word probe said "RAM check ok", and then the loader write died at
-# 0x24001874 - after the erase. The probe must cover that footprint, so nothing
-# is erased at all.
-run_flash "work area that only answers its base word is rejected" 0 \
-    STUB_RAM_FAULT_ABOVE=0x24001000
-expect_log "loader footprint failure names the address" "RAM check FAILED at 0x24001000"
-expect_log "the loader moves to SRAM1 instead" "work area SRAM1 (D2)"
-run_flash "probe writes through the loader footprint" 0 STUB_OPENOCD_LOG="$OCD_LOG"
-if grep -q "mww 0x24004074" "$OCD_LOG" 2>/dev/null &&
-    grep -q "mww 0x24001874" "$OCD_LOG" 2>/dev/null; then
-    pass "work-area probe covers the loader footprint (0x1874 / 0x4074)"
-else
-    fail "work-area probe covers the loader footprint (0x1874 / 0x4074)"
-fi
-
-# --------------------------------------------- retries never erase twice
-# A write that fails *after* the erase used to re-erase on every attempt: three
-# attempts per sector meant three chances to leave sector 0 blank.
-rm -f "$TMP_FLASH/writes"
-run_flash "write failure after erase retries without erasing" 0 \
-    STUB_WRITE_FAIL_ONCE=1 STUB_WRITE_STATE_FILE="$TMP_FLASH/writes" \
-    STUB_OPENOCD_LOG="$OCD_LOG" STLINK_ATTEMPTS=2
-expect_log "write retry says it is not erasing again" "no second erase"
-ERASES="$(grep -c "flash erase_address" "$OCD_LOG" 2>/dev/null || echo 0)"
-WRITES="$(grep -c "flash write_image" "$OCD_LOG" 2>/dev/null || echo 0)"
-if [ "$ERASES" = "1" ] && [ "$WRITES" = "2" ]; then
-    pass "one erase, two writes (1 erase, $WRITES writes)"
-else
-    fail "one erase, two writes (got $ERASES erases, $WRITES writes)"
-fi
-
-# ------------------------------------------- sector 0 (vector table) is last
+# A two-sector image, for the size and no-writer refusals further down.
 python3 - "$TMP_FLASH/two_sectors.bin" <<'PY2'
 import sys
 
 with open(sys.argv[1], "wb") as fh:
     fh.write(bytes((i * 13) & 0xFF for i in range(0x40000)))  # 256 KiB = 2 sectors
 PY2
-rm -f "$OCD_LOG"
-OUT="$(env PATH="$HERE/stubs:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
-    bash "$ROOT/tools/stlink_flash.sh" "$TMP_FLASH/two_sectors.bin" 2>&1)"
-RC=$?
-printf '%s' "$OUT" > "$TMP_FLASH/last.log"
-if [ "$RC" = "0" ]; then
-    pass "two-sector image flashes (exit 0)"
-else
-    fail "two-sector image flashes (exit $RC)"
-    printf '%s\n' "$OUT" | tail -15
-fi
-expect_log "sector order is announced" "sector 0 (vector table / bootloader) is written last"
-FIRST_WRITE="$(grep -n "flash write_image" "$OCD_LOG" 2>/dev/null | head -1)"
-LAST_WRITE="$(grep -n "flash write_image" "$OCD_LOG" 2>/dev/null | tail -1)"
-case "$FIRST_WRITE" in
-    *part_01.bin*) FIRST_IS_ONE=1 ;;
-    *) FIRST_IS_ONE=0 ;;
-esac
-case "$LAST_WRITE" in
-    *part_00.bin*) LAST_IS_ZERO=1 ;;
-    *) LAST_IS_ZERO=0 ;;
-esac
-if [ "$FIRST_IS_ONE" = "1" ] && [ "$LAST_IS_ZERO" = "1" ]; then
-    pass "sector 1 is written before sector 0"
-else
-    fail "sector 1 is written before sector 0"
-fi
 
 # --------------------------------------------- board state: blank vectors
 run_flash "blank vector table is reported" 0 STUB_BLANK_VECTORS=1
@@ -523,7 +395,7 @@ run_sflash() {  # run_sflash <label> [expected-rc] [env assignments...]
     rm -f "$OCD_LOG" "$SFLASH_LOG"
     rm -rf "$TMP_FLASH/mem"
     out="$(env PATH="$SFLASH_PATH:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
-        STUB_MEM_DIR="$TMP_FLASH/mem" \
+        STUB_MEM_DIR="$TMP_FLASH/mem" STLINK_BACKEND=stflash \
         STUB_STFLASH_LOG="$SFLASH_LOG" "$@" \
         bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_HEX" 2>&1)"
     rc=$?
@@ -543,7 +415,7 @@ run_flash_with_image() {  # run_flash_with_image <label> <want> <image> [env...]
     rm -f "$OCD_LOG" "$SFLASH_LOG"
     rm -rf "$TMP_FLASH/mem"
     out="$(env PATH="$SFLASH_PATH:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
-        STUB_MEM_DIR="$TMP_FLASH/mem" \
+        STUB_MEM_DIR="$TMP_FLASH/mem" STLINK_BACKEND=stflash \
         STUB_STFLASH_LOG="$SFLASH_LOG" "$@" \
         bash "$ROOT/tools/stlink_flash.sh" "$img" 2>&1)"
     rc=$?
@@ -635,22 +507,6 @@ else
     pass "nothing is mass erased"
 fi
 
-# The same knob on the OpenOCD path: `stm32h7x mass_erase 0` after a halt.
-run_sflash "OpenOCD mass erase works too" 0 STLINK_BACKEND=ocd STLINK_MASS_ERASE=1
-expect_log "OpenOCD mass erase is announced" "the board is blank until this flash ends"
-expect_log "OpenOCD mass erase completes" "mass erase complete"
-if grep -q "mass_erase" "$OCD_LOG" 2>/dev/null; then
-    pass "mass_erase really reached OpenOCD"
-else
-    fail "mass_erase really reached OpenOCD"
-fi
-
-run_sflash "an OpenOCD mass erase that fails writes nothing" 4 STLINK_BACKEND=ocd \
-    STLINK_MASS_ERASE=1 STUB_MASS_ERASE_FAIL=1
-expect_log "failed mass erase is classified" "FLASH_FAILED erase"
-reject_log "failed mass erase writes nothing" "flash write_image"
-expect_log "the erased state is disclosed" "whole flash (mass erase)"
-
 run_flash_with_image "st-info disagreement refuses the write" 1 \
     "$TMP_FLASH/two_sectors.bin" STUB_STINFO_FLASH_KB=128 STLINK_ALLOW_OVERSIZE=0
 expect_log "st-info size is quoted" "st-info says 128 KiB"
@@ -658,14 +514,6 @@ reject_log "st-info refusal erases nothing" "erased address"
 reject_log "st-info refusal writes nothing" "bytes written and verified"
 
 # --------------------------------------------------------------- backend choice
-run_sflash "STLINK_BACKEND=ocd keeps the OpenOCD path" 0 STLINK_BACKEND=ocd
-expect_log "backend override is announced" "backend: ocd"
-if grep -q "flash write_image" "$OCD_LOG" 2>/dev/null; then
-    pass "OCD backend writes with OpenOCD"
-else
-    fail "OCD backend writes with OpenOCD"
-fi
-
 # No st-flash on PATH and no explicit backend: fall back, do not fail.
 OUT="$(env PATH="$HERE/stubs:$PATH" STLINK_BACKEND=stflash \
     bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_HEX" 2>&1)"
@@ -684,13 +532,12 @@ expect_log "the fix is spelled out" "stlink-tools"
 #   tests/stubs/direct/h7_robust_write.py
 printf '\nFlash wrapper (direct backend)\n'
 DIRECT_LOG="$TMP_FLASH/direct.log"
-DIRECT_STUB="$HERE/stubs/direct/h7_robust_write.py"
 
 run_direct() {  # run_direct <label> <want> [env...]
     rm -f "$DIRECT_LOG"
     local label="$1" want="$2"
     shift 2
-    run_sflash "$label" "$want" STLINK_DIRECT_WRITER="$DIRECT_STUB" \
+    run_sflash "$label" "$want" STLINK_BACKEND=auto \
         STUB_DIRECT_LOG="$DIRECT_LOG" "$@"
 }
 
@@ -728,14 +575,25 @@ run_direct "a bulk read that disagrees with itself does not fail the flash" 0 \
     STUB_DUMP_UNSTABLE=1
 reject_log "an unstable readback is not called a mismatch" "FLASH_FAILED"
 
-run_flash_with_image "direct refuses an image past sector 0" 1 \
-    "$TMP_FLASH/two_sectors.bin" STLINK_BACKEND=direct \
-    STLINK_DIRECT_WRITER="$DIRECT_STUB" STUB_DIRECT_LOG="$DIRECT_LOG"
+rm -f "$DIRECT_LOG"
+run_flash_with_image "an image past sector 0 is refused" 1 \
+    "$TMP_FLASH/two_sectors.bin" STLINK_BACKEND=auto STUB_DIRECT_LOG="$DIRECT_LOG"
+expect_log "the refusal is classified" "FLASH_FAILED nowriter"
 expect_log "the limit is spelled out" "only knows sector 0"
+reject_log "auto never falls back to st-flash" "backend: stflash"
+if [ -s "$DIRECT_LOG" ] || [ -s "$SFLASH_LOG" ]; then
+    fail "no writer runs for an image past sector 0"
+else
+    pass "no writer runs for an image past sector 0"
+fi
 
-run_flash_with_image "auto skips direct for a two-sector image" 0 \
-    "$TMP_FLASH/two_sectors.bin" STLINK_DIRECT_WRITER="$DIRECT_STUB"
-expect_log "auto falls back to st-flash" "backend: stflash"
+run_sflash "STLINK_BACKEND=ocd is a usage error" 1 STLINK_BACKEND=ocd
+expect_log "the removal is explained" "STLINK_BACKEND=ocd was removed"
+if grep -qiE "erase|write_image|program" "$OCD_LOG" 2>/dev/null; then
+    fail "nothing is erased for a removed backend"
+else
+    pass "nothing is erased for a removed backend"
+fi
 
 # Per-session logs land in STLINK_LOG_DIR, named and readable.
 mkdir -p "$TMP_FLASH/logs"
@@ -788,30 +646,32 @@ fi
 reject_log "recovery never mass erases" "mass_erase"
 reject_log "recovery never mass erases (st-flash)" "st-flash --connect-under-reset erase"
 
-# st-flash failing every time falls through to the vendor tool (absent here) and
-# then to OpenOCD, which dies in the loader on this fixture.
-run_recover "recovery falls through to OpenOCD" 3 \
-    STUB_STFLASH_DIE=write STUB_PROGRAM_FAIL=1 STLINK_RECOVER_TRIES=1
-expect_log "fallback is announced" "LAST RESORT"
+# st-flash failing every time falls through to the vendor tool (absent here)
+# and stops: OpenOCD's `program` was removed, its loader cannot write the pad.
+run_recover "st-flash failing on every try fails the recovery" 3 \
+    STUB_STFLASH_DIE=write STLINK_RECOVER_TRIES=1
 expect_log "every writer failed" "RECOVER_FAILED"
+reject_log "OpenOCD's loader is never tried" "openocd program"
+expect_log "the failure points at the direct writer" "direct writer"
 
 # A writer that claims success and a readback that disagrees is the one case
 # that must never print OK.
 run_recover "recovery trusts the readback, not the writer" 4 STUB_VERIFY_FAIL=1
 expect_log "readback mismatch is named" "RECOVER_FAILED verify"
 
-# No halt and no st-flash: refuse rather than write on a dead link.
+# No st-flash and no CubeProgrammer: OpenOCD is not a writer any more, so
+# there is nothing to try - say so before touching the board.
 OUT="$(env PATH="$HERE/stubs:$PATH" STUB_HALT_FAIL=1 STLINK_STFLASH=/nonexistent \
     bash "$ROOT/tools/stlink_recover.sh" "$IMAGE_BIN" 2>&1)"
 RC=$?
 printf '%s' "$OUT" > "$TMP_FLASH/last.log"
-if [ "$RC" = "5" ]; then
-    pass "no halt and no writer stops the recovery (exit 5)"
+if [ "$RC" = "2" ]; then
+    pass "no writer installed stops the recovery (exit 2)"
 else
-    fail "no halt and no writer stops the recovery (exit $RC, wanted 5)"
+    fail "no writer installed stops the recovery (exit $RC, wanted 2)"
 fi
-expect_log "no-halt advice names the pogos" "jog forward"
-reject_log "no write happens without a halt" "connect-under-reset write"
+expect_log "the missing writer is named" "no writer installed"
+reject_log "nothing is written without a writer" "connect-under-reset write"
 
 OUT="$(env PATH="$SFLASH_PATH:$PATH" STUB_MEM_DIR="$TMP_FLASH/mem" STUB_HALT_FAIL=1 \
     bash "$ROOT/tools/stlink_recover.sh" "$IMAGE_BIN" 2>&1)"
@@ -876,7 +736,7 @@ expect_log "the power cycle is suggested" "power-cycle the pad"
 # -------------------------------------------- erratum 3092511 is not a halt
 run_sflash "a bogus halt is rejected" 4 STUB_BOGUS_HALT=1 STLINK_HALT_TRIES=1
 expect_log "the erratum is named" "erratum 3092511"
-expect_log "the workaround is named" "STLINK_BACKEND=stflash"
+expect_log "the workaround is named" "power-cycle the pad and retry"
 reject_log "a bogus halt never reaches the flash" "FLASH_OK"
 
 # ------------------------------------------------------------- blank check

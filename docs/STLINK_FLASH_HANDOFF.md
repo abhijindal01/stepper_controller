@@ -1,7 +1,7 @@
 # ST-LINK pad-test flash handoff (Pi fixture → Flask applet)
 
 **Host:** `assurance` (RPi 4B) · Flask on `:5000` · ST-LINK/V2 `0483:3748` FW **V2J46S7** (clone)  
-**OpenOCD:** `/usr/bin/openocd` `0.12.0+rpt…` — probe, erase and readback only  
+**OpenOCD:** `/usr/bin/openocd` `0.12.0+rpt…` — halt, probe, readback, and the direct writer's transport; its flash loader is **not used** (removed from the wrapper)  
 **Write path:** `tools/h7_direct/h7_robust_write.py` for sector 0 (see *Backend*); `st-flash` 1.8.0 / 1.9.0 **fails here**  
 **No NRST** on pogo harness — only SWCLK, SWDIO, GND (+ VTarget sense).  
 **Part:** STM32H743**xG**, **1 MiB** flash (confirmed by `st-flash` *and* OpenOCD), 128 KiB pages.
@@ -87,10 +87,10 @@ so the wrapper resolves a backend automatically:
 
 | `STLINK_BACKEND` | Behaviour |
 |------------------|-----------|
-| `auto` (default) | `direct` for an image inside sector 0, else `st-flash` when it is installed, else OpenOCD |
-| `direct` | force the word-by-word writer (exit 1 for an image past sector 0) |
-| `stflash` | force `st-flash` (fails with exit 1 and an install hint if missing) |
-| `ocd` | force the old OpenOCD per-sector path |
+| `auto` (default) | the direct writer; an image past sector 0 is refused with `FLASH_FAILED nowriter` before anything is erased |
+| `direct` | same as `auto` |
+| `stflash` | force `st-flash` (fails with exit 1 and an install hint if missing). It has failed on this fixture; kept for other dongles/boards |
+| `ocd` | **removed** - exit 1, `FLASH_FAILED usage`. The OpenOCD flash-loader path was deleted from the wrapper |
 
 #### Update 2026-10-30: `st-flash` does not write this board either
 
@@ -155,7 +155,7 @@ Knobs (environment):
 | `STLINK_FLASH_PRECHECK_N` / `_MIN` | `3` / `66` | Sessions and pass rate the pre-check needs |
 | `STLINK_FLASH_RETRIES` | `2` | Retries of a *transient* link failure (`swd_lost`, `ap_fail`, `halt_fail`) |
 | `STLINK_FLASH_RETRY_DELAY` | `2` | Seconds between those retries (multiplied by attempt) |
-| `STLINK_BACKEND` | `auto` | `auto` / `direct` / `stflash` / `ocd` writer (see *Backend*) |
+| `STLINK_BACKEND` | `auto` | `auto` / `direct` / `stflash` writer (see *Backend*; `ocd` was removed) |
 | `STLINK_STFLASH` | `st-flash` | `st-flash` binary used by the wrapper |
 | `STLINK_DIRECT_WRITER` | `tools/h7_direct/h7_robust_write.py` | word-by-word sector-0 writer used by the `direct` backend |
 | `STLINK_MASS_ERASE` | `0` | Erase the whole flash first (see *Mass erase* - the size check still runs first) |
@@ -409,7 +409,7 @@ the rest of the image with it.
 | `Error: Failed to read memory at 0x0801d7c8` during a verify | the readback could not happen (ECC bus error from half-programmed words, or the link) | `FLASH_FAILED readback:` — contents **unknown**, not mismatched; erase the page before diagnosing further |
 | `two readbacks of the same range disagree` | the link corrupts data it reads | nothing was erased; cable/port/dongle, then power-cycle |
 | `no RAM region held a 4 KiB random block` | neither writer can run its loader | nothing was erased; power-cycle (erratum 3092511) and re-seat contact |
-| `halted … pc: 0x00000000 msp: 0x00000000` | erratum 3092511 bogus halt on a blank part | `FLASH_FAILED halt:`; power-cycle, then `STLINK_BACKEND=stflash` |
+| `halted … pc: 0x00000000 msp: 0x00000000` | erratum 3092511 bogus halt on a blank part | `FLASH_FAILED halt:`; power-cycle and retry (the direct writer has written a fully blank sector 0 after a power cycle) |
 | `did not read back as erased` | the erase did not blank the range, so the program will `PGSERR` | supply/VCAP, power-cycle, retry |
 | `st-info reports … KiB` reading 1024× too large | `st-info` 1.8.0 prints **bytes** (`flash: 1048576`) | fixed: the size is converted, and both spellings are accepted |
 
@@ -525,10 +525,10 @@ STLINK_MASS_ERASE=1 tools/stlink_flash.sh /tmp/bl_sector0.bin 0x08000000
 #   FLASH_OK 131072 bytes @ 0x8000000 backend stflash ...
 ```
 
-With `STLINK_BACKEND=ocd` the same knob runs `stm32h7x mass_erase 0` after a
-confirmed `reset halt`. Both paths record `whole flash (mass erase)` in
-`erased but NOT written:` if the write afterwards fails, so a blank board is
-never reported as "nothing was erased".
+With the default direct writer the same knob erases sector 0 only. The
+OpenOCD `stm32h7x mass_erase 0` path went with the OpenOCD backend. A failed
+write after an erase is recorded in `erased but NOT written:`, so a blank board
+is never reported as "nothing was erased".
 
 ### Verdicts are measurements, not exit codes
 
@@ -582,7 +582,9 @@ after it fails — including `load_image` and every loader download. The wrapper
 rejects such a session (`FLASH_FAILED halt: … erratum 3092511`), retries with
 fresh `reset halt`, and never converts its zeros into a RAM verdict.
 
-The cure on a blank part is `STLINK_BACKEND=stflash`: `--connect-under-reset`
+*Update 2026-10-30:* st-flash no longer writes this pad; power-cycle and use
+the default direct writer instead. Original note: the cure on a blank part was
+`STLINK_BACKEND=stflash`: `--connect-under-reset`
 holds the core while it connects, which is the one attach that has ever worked
 here. On the pad the sequence that mattered was: power-cycle, then
 `st-flash --connect-under-reset …` immediately.
@@ -590,8 +592,9 @@ here. On the pad the sequence that mattered was: power-cycle, then
 ### Recovery: put sector 0 back
 
 `tools/stlink_recover.sh` is the escalation when the normal flash path fails. It
-tries three writers in the order that works on this fixture and validates the
-result with a *different* tool than the one that wrote:
+tries two writers and validates the result with a *different* tool than the one
+that wrote. For a bootloader, `tools/stlink_flash.sh` (direct writer) comes
+first - it is what actually worked here; st-flash has since failed on this pad:
 
 ```bash
 tools/stlink_recover.sh                          # default image
@@ -605,9 +608,11 @@ tools/stlink_recover.sh --dry-run image.bin      # plan only, touch nothing
 | 0 | OpenOCD `reset halt` + `reg pc` | no halt ⇒ advise, do not write (exit 5 if no `st-flash` either) |
 | 1 | `st-flash --connect-under-reset write` | retried `STLINK_RECOVER_TRIES` (3) times, 2 s apart |
 | 2 | `STM32_Programmer_CLI -c port=SWD mode=UR reset=SWrst -w … -v` | only if CubeProgrammer is installed |
-| 3 | OpenOCD `program … verify` | last resort, one attempt, prints the failure signature |
-| 4 | OpenOCD `verify_image` | the verdict: `RECOVER_OK`, or exit 4 on mismatch |
-| 5 | OpenOCD `reset run` | else "power-cycle the pad" |
+| 3 | OpenOCD `verify_image` | the verdict: `RECOVER_OK`, or exit 4 on mismatch |
+| 4 | OpenOCD `reset run` | else "power-cycle the pad" |
+
+OpenOCD's `program` used to be step 3 (last resort). It was removed: its loader
+cannot write this fixture.
 
 Exit codes: `0` written and verified, `1` usage, `2` no writer installed,
 `3` every writer failed, `4` written but the readback disagrees, `5` no contact

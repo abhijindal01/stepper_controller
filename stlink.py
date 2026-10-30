@@ -189,7 +189,7 @@ FLASH_FAILURE_KINDS = {
         "The flash could not be read back at all, so what it holds is "
         "unknown - that is a link failure, not a mismatch. On a blank H7 it "
         "is usually erratum 3092511 (a halt with pc/msp = 0): power-cycle the "
-        "pad and retry with STLINK_BACKEND=stflash.",
+        "pad and retry.",
     ),
     "verify": (
         4,
@@ -216,6 +216,23 @@ FLASH_FAILURE_KINDS = {
         "st-flash could not write the image (SWD entry or the write "
         "itself). Re-run it - this dongle succeeds on a retry - and watch "
         "`dmesg -T -w | grep -iE \"usb|stlink\"` for USB resets.",
+    ),
+    "direct": (
+        4,
+        "flash_fail",
+        "The word-by-word writer stopped: the SWD link would not give "
+        "consistent reads, or sector 0 holds data that is neither blank nor "
+        "the image. Re-run it - it resumes where it stopped and never "
+        "programs a word twice.",
+    ),
+    "nowriter": (
+        5,
+        "no_writer",
+        "This image reaches past sector 0, and the only writer that works on "
+        "this fixture (the direct writer) only knows sector 0. Nothing was "
+        "erased. Flash a bootloader-only image (128 KiB or less at "
+        "0x08000000); the application sectors have no working writer here "
+        "yet.",
     ),
     "swd": (
         3,

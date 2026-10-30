@@ -34,11 +34,14 @@ xPSR: 0x01000000 pc: 0xfffffffe msp: 0xfffffffc
 
 An interrupted flash erased sector 0 (vector table + bootloader) and never
 wrote it back. `tools/stlink_flash.sh` now reports this as
-`FLASH_EVENT vectors_blank` and writes sector 0 **last**, so a full image
-repairs it:
+`FLASH_EVENT vectors_blank`. Its direct writer repairs it from a
+bootloader-only image (the vector table is written last); a full `combined.hex`
+reaches past sector 0 and is refused (`FLASH_FAILED nowriter`), because nothing
+can write the application sectors on this fixture yet:
 
 ```bash
-../tools/stlink_flash.sh combined.hex        # full image, sector 0 written last
+head -c 131072 combined.bin > bl_only.bin
+../tools/stlink_flash.sh bl_only.bin 0x08000000
 ```
 
 The pad is a **1 MiB** H743 (`xG`), so the app partition is
@@ -51,13 +54,13 @@ every H743:
 
 ```bash
 head -c 131072 combined.bin > bl_only.bin    # BL lives at the start of combined.bin
-../tools/stlink_flash.sh bl_only.bin 0x08000000      # st-flash does the write
+../tools/stlink_flash.sh bl_only.bin 0x08000000      # the direct writer does the write
 ```
 
 If that fails, the escalation ladder is `../tools/stlink_recover.sh`:
 
 ```bash
-../tools/stlink_recover.sh bl_only.bin 0x08000000    # st-flash -> CubeProgrammer -> OpenOCD
+../tools/stlink_recover.sh bl_only.bin 0x08000000    # st-flash -> CubeProgrammer
 ../tools/stlink_recover.sh --dry-run bl_only.bin     # show the plan only
 ```
 
