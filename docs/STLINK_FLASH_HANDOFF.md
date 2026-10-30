@@ -68,6 +68,8 @@ Knobs (environment):
 | `STLINK_RUN_AFTER` | `1` | `reset run` once the image verifies |
 | `STLINK_OPENOCD_TIMEOUT` | `300` | Per-OpenOCD-session timeout (s) |
 | `STLINK_FULL_VERIFY` | `1` | Second whole-image verify pass (`0` = per-sector only) |
+| `STLINK_PROBE_SIZE` | `1` | Probe the device flash size before writing (see *probed size* below) |
+| `STLINK_ALLOW_OVERSIZE` | `0` | Write an image bigger than the probed flash instead of refusing it |
 | `STLINK_FLASH_TIMEOUT` | `1800` | Server-side (`stlink.py`) ceiling for the whole flash (s) |
 | `STLINK_CONNECT_BACKOFF` | `2` | Seconds before a failed *connect* is retried (0/2/4 s ladder) |
 | `STLINK_FLASH_PRECHECK` | `1` | Run a 3-session link check before flashing (`0` = skip) |
@@ -172,6 +174,39 @@ openocd -f tools/openocd_fixture.cfg \
 # expected: 0x24000000: 5aa5c33c
 ```
 
+#### The probe has to cover the loader footprint, not the ends of the window
+
+The work area is 64 KiB, but only ~16 KiB of it is used: OpenOCD downloads the
+loader blob at the base, then its parameter block and image buffer follow. A
+probe that writes one word at `0x24000000` and one at the top of the window
+passes while every loader write past a few KiB fails - the log then reads
+"RAM check ok" and dies *after* the erase:
+
+```text
+work area AXI SRAM (D1) @ 0x24000000 - RAM check ok
+  sector 0/12 @ 0x8000000 (131072 bytes, erase 128 KiB)
+    attempt 1/3 failed: failed during write (...)
+      Error: Failed to write memory at 0x24003074
+      Error: error writing to flash at address 0x08000000 at offset 0x00000000
+```
+
+The failing offset moves between attempts (`0x1874`, `0x3074`, `0x4074`) - that
+is the loader's own buffer, not the base word. `tools/stlink_flash.sh` now
+writes a pattern at `0x0, 0x400, 0x800, 0x1000, 0x1874, 0x2000, 0x2800,
+0x3074, 0x3994, 0x4000, 0x4074, 0x8000` **plus a 32-word burst at `0x1000`**
+and reads it all back, so a window that cannot carry that footprint is rejected
+*before* anything is erased:
+
+```text
+work area AXI SRAM (D1) @ 0x24000000 - RAM check FAILED at 0x24001000 (...)
+work area SRAM1 (D2) @ 0x30000000 - RAM check ok
+```
+
+A different region (`SRAM1`/`SRAM4`) is then used for the loader. If no region
+survives, the flash stops with exit `2` and nothing is erased - the RAM probe is
+the link test, and the same AP carries the loader, so a work area that cannot
+hold 16 KiB of pattern will not carry a 128 KiB sector either.
+
 ### Server side: link pre-check, retries and selectable speed
 
 `POST /api/stlink/flash` (and `/stlink/flash`) accepts, besides `image`/`base`:
@@ -263,6 +298,9 @@ the rest of the image with it.
 | Log | Cause | Action |
 |-----|-------|--------|
 | `Failed to write memory at 0x2000xxxx` | loader RAM in DTCM | fixed: work area moved to AXI SRAM |
+| `Failed to write memory at 0x24001874` / `0x24003074` / `0x24004074`, after `RAM check ok` | the work area answers isolated words but not the loader footprint (link collapsing under sustained writes) | fixed: the probe now writes the footprint + a 32-word burst before erasing; a work area that fails it is skipped |
+| `halted due to debug-request ... pc: 0xfffffffe msp: 0xfffffffc` | sector 0 is erased: an earlier run erased the vector table and never wrote it back | reported as `FLASH_EVENT vectors_blank`; flash a full image from `0x08000000` (sector 0 is written last, see below) |
+| `flash size probed value 1024k` / `Bank (0) size is 512 kb` with a 1.6 MB image | the part is 1 MiB, not the 2 MiB the tooling assumes | `FLASH_FAILED size:` - build for `FLASH_SIZE_KB 1024` or confirm the part; `STLINK_ALLOW_OVERSIZE=1` forces the write |
 | `target was in unknown state when halt was requested` | `halt` did not stop a running app | fixed: `reset halt` + DHCSR check |
 | `erase time-out or operation error sector 0` | target reset itself mid-erase (IWDG/brownout) | re-seat, power-cycle the pad, retry (`STLINK_SPEED=25`) |
 | `Fail reading CTRL/STAT register. Force reconnect` | SWD link lost (chip reset / contact) | re-seat contact, power-cycle |
@@ -272,11 +310,82 @@ the rest of the image with it.
 | `no writable RAM for the flash loader` | no halt + no reachable RAM | re-seat, power-cycle, retry |
 
 Exit codes / markers from the wrapper: `0` ok (`FLASH_OK ...`),
-`1` usage or image-range error, `2` no writable work area (`FLASH_FAILED ram: ...`),
+`1` usage or image-range error (including an image that does not fit the
+probed flash size), `2` no writable work area (`FLASH_FAILED ram: ...`),
 `3` flash/verify failed or the link died (`FLASH_FAILED
 erase|write|verify|swd|ap: ...`), `4` target would not halt (`FLASH_FAILED
-halt: ...`). In every failure case nothing is erased unless a halt was
-confirmed.
+halt: ...`), `5` the board's vector table is blank and the image does not
+restore it. In every failure case nothing is erased unless a halt was
+confirmed, and every failure message states which sectors were erased but not
+written (`erased but NOT written: sector 0 @ 0x08000000, ...`).
+
+`FLASH_WARN ...` lines are advisory (image bigger than the probed flash,
+forced writes); `FLASH_EVENT vectors_blank ...` marks a board that is currently
+unbootable.
+
+### Sector 0 is written last, and never erased twice
+
+Sector 0 (`0x08000000`, 128 KiB) holds the vector table and the ArduPilot
+bootloader. Two rules keep an interrupted flash from bricking the pad:
+
+1. **Order** - a multi-sector image is written `1..N` first and sector 0 last
+   (`sector order: 1..12, then 0`). If the link dies at sector 5, the board
+   still boots the previous firmware; with the old order it sat on an erased
+   sector 0 (`pc 0xfffffffe`, `msp 0xfffffffc`) and every later session had to
+   fight a lockup loop.
+2. **No second erase** - once a sector's erase has completed, a retry runs
+   `write_image` + `verify_image` only (`... is already erased - retrying the
+   write only`). Previously three attempts per sector meant three erases of
+   sector 0 for one write failure. A *link* failure (`swd`, `ap`) is the
+   exception: the erase result is not trustworthy then, so the retry erases
+   again.
+
+Before the first erase the wrapper reads the vector table
+(`mdw 0x08000000`, `mdw 0x08000004`) and reports what it sees:
+
+```text
+vector table ok (SP=0x24080000 PC=0x08000201)
+# or, on a board left mid-flash:
+FLASH_EVENT vectors_blank SP=0xffffffff PC=0xffffffff
+WARNING: sector 0 @ 0x08000000 has no valid vector table - the board cannot boot
+```
+
+A blank vector table does **not** block a full image (`0x08000000..`) - that is
+the repair. It does block an *app-only* image (`0x08020000`): exit `5`, nothing
+erased, because the board would stay unbootable. Power-cycling the pad does not
+fix an erased sector 0; only a flash does.
+
+### Probed flash size: this pad reports 1024 KiB
+
+`tools/stlink_flash.sh` now runs `flash probe 0` before writing and prints what
+the driver found:
+
+```text
+device flash: probed 2048 KiB (0x8000000..0x8200000)
+```
+
+On the pad it came back as **1024 KiB** (`flash size probed value 1024k`,
+`Bank (0) size is 512 kb`) while the queued image was 1,645,996 bytes
+(`0x08000000..0x08191DAC`). Sectors past `0x08100000` do not exist on a 1 MiB
+part, so the write would have died there - after erasing everything before it:
+
+```text
+FLASH_WARN image does not fit the probed flash size
+    image : 0x08000000..0x08191DAC (1645996 bytes)
+    device: 0x08000000..0x08100000 (1024 KiB)
+FLASH_FAILED size: refusing to write 1645996 bytes into 1024 KiB of flash - nothing was erased
+```
+
+Two explanations, both must be ruled out before flashing:
+
+- the MCU really is a 1 MiB H743 (`xG`) or a relabelled H750 - ArduCopter does
+  not fit, the hwdef needs `FLASH_SIZE_KB 1024` and a trimmed build;
+- the probe read the wrong value (a flaky link can corrupt the `FLASHSIZE`
+  register read at `0x1FF1E880`) - re-probe at 50 kHz on a clean link with
+  `openocd -f tools/openocd_fixture.cfg -c "init; flash probe 0; exit"`.
+
+`0x08000000`..`0x0801FFFF` (the bootloader sector) is the same either way, so a
+sector-0-only write still fits and is enough to make the board bootable again.
 
 Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. After verify:
 

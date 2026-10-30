@@ -201,6 +201,30 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(r["code"], 5)
         self.assertIn("contact", r["hint"])
 
+    def test_blank_vector_table_refusal(self):
+        text = STLINK_BANNER + (
+            "FLASH_EVENT vectors_blank SP=0xffffffff PC=0xffffffff\n"
+            "FLASH_FAILED vectors: this image starts at 0x8020000, so it cannot "
+            "restore the vector table at 0x08000000 - the board would stay "
+            "unbootable\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "vectors_blank")
+        self.assertEqual(r["code"], 5)
+        self.assertIn("0x08000000", r["hint"])
+
+    def test_image_too_big_for_probed_flash(self):
+        text = STLINK_BANNER + (
+            "device flash: probed 1024 KiB (0x8000000..0x8100000)\n"
+            "FLASH_WARN image does not fit the probed flash size\n"
+            "FLASH_FAILED size: refusing to write 1645996 bytes into 1024 KiB "
+            "of flash - nothing was erased\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "image_too_big")
+        self.assertEqual(r["code"], 5)
+        self.assertIn("FLASH_SIZE_KB", r["hint"])
+
     def test_swd_connect_failure(self):
         r = self.classify("Error: init mode failed (unable to connect to the target)\n")
         self.assertEqual(r["state"], "swd_fail")

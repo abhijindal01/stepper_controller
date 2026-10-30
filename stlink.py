@@ -206,8 +206,25 @@ FLASH_FAILURE_KINDS = {
     "ram": (
         5,
         "no_work_area",
-        "No writable RAM for the flash loader - the target is not halted or "
-        "the SWD contact is broken.",
+        "The flash loader's work area did not hold the probe pattern (base "
+        "word plus a 32-word burst through the loader footprint) - the target "
+        "is not halted or the SWD link collapses under load. Check pogo "
+        "contact / target power, then tools/stlink_soak.sh.",
+    ),
+    "size": (
+        5,
+        "image_too_big",
+        "The image is larger than the flash this target reports (the pad "
+        "returns 1024 KiB, i.e. an H743xG / relabelled H750). Nothing was "
+        "erased. Build for FLASH_SIZE_KB 1024, or re-probe the flash size on "
+        "a clean link - STLINK_ALLOW_OVERSIZE=1 forces the write.",
+    ),
+    "vectors": (
+        5,
+        "vectors_blank",
+        "Sector 0 holds no vector table, so the board cannot boot (pc "
+        "0xfffffffe / msp 0xfffffffc) and an app-only image cannot repair it. "
+        "Nothing was erased - flash a full image from 0x08000000.",
     ),
     "timeout": (
         4,

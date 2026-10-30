@@ -351,6 +351,111 @@ else
     fail "flash refuses out-of-flash base (exit $RC)"
 fi
 
+# ------------------------------------- work area: probe the loader footprint
+# The fault seen on the pad: AXI SRAM answers a word at its base, so the old
+# two-word probe said "RAM check ok", and then the loader write died at
+# 0x24001874 - after the erase. The probe must cover that footprint, so nothing
+# is erased at all.
+run_flash "work area that only answers its base word is rejected" 0 \
+    STUB_RAM_FAULT_ABOVE=0x24001000
+expect_log "loader footprint failure names the address" "RAM check FAILED at 0x24001000"
+expect_log "the loader moves to SRAM1 instead" "work area SRAM1 (D2)"
+run_flash "probe writes through the loader footprint" 0 STUB_OPENOCD_LOG="$OCD_LOG"
+if grep -q "mww 0x24004074" "$OCD_LOG" 2>/dev/null &&
+    grep -q "mww 0x24001874" "$OCD_LOG" 2>/dev/null; then
+    pass "work-area probe covers the loader footprint (0x1874 / 0x4074)"
+else
+    fail "work-area probe covers the loader footprint (0x1874 / 0x4074)"
+fi
+
+# --------------------------------------------- retries never erase twice
+# A write that fails *after* the erase used to re-erase on every attempt: three
+# attempts per sector meant three chances to leave sector 0 blank.
+rm -f "$TMP_FLASH/writes"
+run_flash "write failure after erase retries without erasing" 0 \
+    STUB_WRITE_FAIL_ONCE=1 STUB_WRITE_STATE_FILE="$TMP_FLASH/writes" \
+    STUB_OPENOCD_LOG="$OCD_LOG" STLINK_ATTEMPTS=2
+expect_log "write retry says it is not erasing again" "no second erase"
+ERASES="$(grep -c "flash erase_address" "$OCD_LOG" 2>/dev/null || echo 0)"
+WRITES="$(grep -c "flash write_image" "$OCD_LOG" 2>/dev/null || echo 0)"
+if [ "$ERASES" = "1" ] && [ "$WRITES" = "2" ]; then
+    pass "one erase, two writes (1 erase, $WRITES writes)"
+else
+    fail "one erase, two writes (got $ERASES erases, $WRITES writes)"
+fi
+
+# ------------------------------------------- sector 0 (vector table) is last
+python3 - "$TMP_FLASH/two_sectors.bin" <<'PY2'
+import sys
+
+with open(sys.argv[1], "wb") as fh:
+    fh.write(bytes((i * 13) & 0xFF for i in range(0x40000)))  # 256 KiB = 2 sectors
+PY2
+rm -f "$OCD_LOG"
+OUT="$(env PATH="$HERE/stubs:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
+    bash "$ROOT/tools/stlink_flash.sh" "$TMP_FLASH/two_sectors.bin" 2>&1)"
+RC=$?
+printf '%s' "$OUT" > "$TMP_FLASH/last.log"
+if [ "$RC" = "0" ]; then
+    pass "two-sector image flashes (exit 0)"
+else
+    fail "two-sector image flashes (exit $RC)"
+    printf '%s\n' "$OUT" | tail -15
+fi
+expect_log "sector order is announced" "sector 0 (vector table / bootloader) is written last"
+FIRST_WRITE="$(grep -n "flash write_image" "$OCD_LOG" 2>/dev/null | head -1)"
+LAST_WRITE="$(grep -n "flash write_image" "$OCD_LOG" 2>/dev/null | tail -1)"
+case "$FIRST_WRITE" in
+    *part_01.bin*) FIRST_IS_ONE=1 ;;
+    *) FIRST_IS_ONE=0 ;;
+esac
+case "$LAST_WRITE" in
+    *part_00.bin*) LAST_IS_ZERO=1 ;;
+    *) LAST_IS_ZERO=0 ;;
+esac
+if [ "$FIRST_IS_ONE" = "1" ] && [ "$LAST_IS_ZERO" = "1" ]; then
+    pass "sector 1 is written before sector 0"
+else
+    fail "sector 1 is written before sector 0"
+fi
+
+# --------------------------------------------- board state: blank vectors
+run_flash "blank vector table is reported" 0 STUB_BLANK_VECTORS=1
+expect_log "blank vectors are named" "FLASH_EVENT vectors_blank"
+expect_log "blank vectors explain why the board will not boot" "no valid vector table"
+expect_log "blank vectors still reach FLASH_OK" "FLASH_OK"
+
+OUT="$(env PATH="$HERE/stubs:$PATH" STUB_BLANK_VECTORS=1 \
+    bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_BIN" 0x08020000 2>&1)"
+RC=$?
+printf '%s' "$OUT" > "$TMP_FLASH/last.log"
+if [ "$RC" = "5" ]; then
+    pass "app-only image on a blank-vector board is refused (exit 5)"
+else
+    fail "app-only image on a blank-vector board is refused (exit $RC, wanted 5)"
+    printf '%s\n' "$OUT" | tail -8
+fi
+expect_log "refusal says to flash a full image" "flash a full image from 0x08000000"
+reject_log "refusal happens before any erase" "erased address"
+
+# ------------------------------------------- board state: probed flash size
+OUT="$(env PATH="$HERE/stubs:$PATH" STUB_FLASH_SIZE_KB=128 \
+    bash "$ROOT/tools/stlink_flash.sh" "$TMP_FLASH/two_sectors.bin" 2>&1)"
+RC=$?
+printf '%s' "$OUT" > "$TMP_FLASH/last.log"
+if [ "$RC" = "1" ]; then
+    pass "image bigger than the probed flash is refused (exit 1)"
+else
+    fail "image bigger than the probed flash is refused (exit $RC, wanted 1)"
+    printf '%s\n' "$OUT" | tail -10
+fi
+expect_log "oversize refusal shows the probed size" "image does not fit the probed flash size"
+reject_log "oversize refusal erases nothing" "erased address"
+
+run_flash "oversize write can be forced" 0 STUB_FLASH_SIZE_KB=128 \
+    STLINK_ALLOW_OVERSIZE=1
+reject_log "forced oversize does not claim FLASH_FAILED" "FLASH_FAILED"
+
 rm -rf "$TMP_FLASH"
 
 # ---------------------------------------------------------------- summary

@@ -1,12 +1,15 @@
 #!/bin/bash
 # Flash .bin/.hex via ST-LINK for IndiH743 (no NRST).
 #
-# Two fixture quirks are handled here:
+# Three fixture quirks are handled here:
 #
 # 1. Flash-loader RAM. OpenOCD defaults the STM32H7 work area to DTCM
 #    (0x20000000); writes there fault on this fixture ("Failed to write memory
 #    at 0x2000xxxx") and the loader is never downloaded. We probe RAM and use
-#    the first healthy region, AXI SRAM first.
+#    the first healthy region, AXI SRAM first. The probe covers the *loader
+#    footprint*, not just the ends of the window: a work area that answers a
+#    single word at 0x24000000 can still fail every loader write
+#    ("Failed to write memory at 0x24001874").
 #
 # 2. Halting. `halt` on a running app does not stick (erratum 3092511 leaves
 #    the core running, and the app's IWDG then resets the chip mid erase/write:
@@ -16,6 +19,11 @@
 #    runs, and that also leaves IWDG unarmed. The halt is confirmed by reading
 #    DHCSR before anything is erased; without a confirmed halt nothing is
 #    erased.
+#
+# 3. Order. Sector 0 carries the vector table (and the bootloader), so it is
+#    written *last*: an interrupted multi-sector flash then leaves a board that
+#    still boots instead of one with a blank vector table (SP=0xFFFFFFFC ->
+#    lockup, pc=0xFFFFFFFE). Retries after a completed erase never erase again.
 #
 #   tools/stlink_flash.sh <image.bin|image.hex> [base_addr_for_bin]
 #
@@ -32,10 +40,16 @@
 #   STLINK_CONNECT_BACKOFF  seconds before a connect retry (default 2)
 #   STLINK_FULL_VERIFY      whole-image verify pass   (default 1)
 #   STLINK_RUN_AFTER        1 = `reset run` at end    (default 1)
+#   STLINK_PROBE_SIZE       1 = probe the device flash size first (default 1)
+#   STLINK_ALLOW_OVERSIZE   1 = write an image bigger than the probed flash
+#                            (default 0: refuse, see FLASH_WARN in the log)
 #   OPENOCD                 openocd binary            (default openocd)
 #
-# Exit codes: 0 ok, 1 usage/file error, 2 no writable work area or unhealthy
-#             link, 3 flash/verify failed or link lost, 4 target would not halt.
+# Exit codes: 0 ok, 1 usage/file error (including an image that does not fit
+#             the probed flash size), 2 no writable work area or unhealthy
+#             link, 3 flash/verify failed or link lost, 4 target would not
+#             halt, 5 the board's vector table is blank and this image does not
+#             restore it (flash a full image from 0x08000000 instead).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CFG="${ROOT}/openocd_fixture.cfg"
@@ -43,7 +57,7 @@ PY="${ROOT}/../venv/bin/python3"
 [[ -x "$PY" ]] || PY=python3
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '2,43p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
   [[ $# -lt 1 ]] && exit 1
   exit 0
 fi
@@ -105,6 +119,12 @@ OCD_TIMEOUT = float(_env("STLINK_OPENOCD_TIMEOUT", "300"))
 CONNECT_BACKOFF = float(_env("STLINK_CONNECT_BACKOFF", "2"))
 FULL_VERIFY = _flag("STLINK_FULL_VERIFY", True)
 RUN_AFTER = _flag("STLINK_RUN_AFTER", True)
+PROBE_SIZE = _flag("STLINK_PROBE_SIZE", True)
+ALLOW_OVERSIZE = _flag("STLINK_ALLOW_OVERSIZE", False)
+
+# Sectors that were erased but not written back yet. Every failure message
+# repeats this, because "nothing was erased" is only true when it is empty.
+TOUCHED: list[str] = []
 
 # (label, phys, usable size). AXI SRAM first: it answers debug accesses on this
 # fixture, DTCM does not.
@@ -281,8 +301,9 @@ def explain(kind: str) -> str:
             "or SWCLK/SWDIO"
         ),
         "ram": (
-            "flash-loader RAM is unreachable over SWD (work area) - the target "
-            "is probably not halted, or SWD contact is broken"
+            "the flash-loader work area did not hold the probe pattern - "
+            "either the write failed (SWD link collapsing under load, target "
+            "not halted) or the RAM answered with different data"
         ),
         "verify": "image read back different from what was written",
         "timeout": "OpenOCD did not finish in time",
@@ -292,23 +313,89 @@ def explain(kind: str) -> str:
 
 # ---------------------------------------------------------------- work-area pick
 
-def ram_usable(phys: int, size: int, speed: int) -> tuple[bool, str]:
-    lo = phys
-    hi = phys + min(size, WA_SIZE) - 4
-    pat_lo, pat_hi = 0x5AA5C33C, 0x3CC35AA5
-    cmds = wa_commands(phys, size) + [
-        f"init; adapter speed {speed}; halt",
-        f"mww {lo:#x} {pat_lo:#x}",
-        f"mww {hi:#x} {pat_hi:#x}",
-        f"mdw {lo:#x}",
-        f"mdw {hi:#x}",
-        "exit",
+# Offsets inside the work area that the flash loader really touches: OpenOCD
+# downloads the loader blob at the base, allocates its parameter block and the
+# image buffer after it, and then streams the image through that buffer. A
+# probe that only pokes the first and the last word of the 64 KiB window says
+# "RAM check ok" while every loader write past a few KiB fails:
+#
+#     work area AXI SRAM (D1) @ 0x24000000 - RAM check ok
+#     Error: Failed to write memory at 0x24001874
+#     Error: error writing to flash at address 0x08000000 at offset 0x00000000
+#
+# So probe the footprint (and a 32-word burst through it), not the ends of the
+# window: a link that cannot sustain writes is caught *before* anything is
+# erased.
+WA_PROBE_OFFSETS = (
+    0x0000, 0x0400, 0x0800, 0x1000, 0x1874,
+    0x2000, 0x2800, 0x3074, 0x3994, 0x4000, 0x4074, 0x8000,
+)
+WA_BURST_AT = 0x1000
+WA_BURST_WORDS = 32
+
+
+def _probe_value(idx: int, addr: int) -> int:
+    return (0x5AA50000 | ((idx & 0xFF) << 8)) ^ (addr & 0xFFFF)
+
+
+def ram_usable(phys: int, size: int, speed: int) -> tuple[bool, str, int | None]:
+    """Write a pattern through the loader footprint and read it back.
+
+    Returns (ok, log, bad_address). `bad_address` is the first spot that did
+    not hold the pattern, or None when the failure was elsewhere (no connect,
+    link lost, ...).
+    """
+    size = min(size, WA_SIZE)
+    spots: list[int] = [
+        phys + off for off in WA_PROBE_OFFSETS if off + 4 <= size
     ]
-    rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 60))
+    spots += [
+        phys + WA_BURST_AT + 4 * i
+        for i in range(WA_BURST_WORDS)
+        if WA_BURST_AT + 4 * i + 4 <= size
+    ]
+    expected = {addr: _probe_value(i, addr) for i, addr in enumerate(spots)}
+
+    cmds = wa_commands(phys, size) + [f"init; adapter speed {speed}; halt"]
+    cmds += [f"mww {addr:#x} {val:#x}" for addr, val in expected.items()]
+    cmds += [f"mdw {addr:#x}" for addr in expected]
+    cmds.append("exit")
+
+    rc, text = run_openocd(cmds, timeout=min(OCD_TIMEOUT, 90))
     if rc != 0 or "Error:" in text:
-        return False, text
-    low = text.lower()
-    return (f"{pat_lo:08x}" in low and f"{pat_hi:08x}" in low), text
+        # Report *which* spot died: that address is what the loader would have
+        # hit, and 0x24001874 / 0x24004074 in an OpenOCD log are the signature
+        # of this fixture.
+        bad = None
+        for m in re.finditer(
+            r"failed to (?:write|read) memory at (0x[0-9a-f]+)", text, re.I
+        ):
+            addr = int(m.group(1), 16)
+            if addr in expected:
+                bad = addr
+        return False, text, bad
+
+    seen = {
+        int(m.group(1), 16): int(m.group(2), 16)
+        for m in re.finditer(r"0x([0-9a-f]{8}):\s*([0-9a-f]{8})", text, re.I)
+    }
+    for addr, want in expected.items():
+        if seen.get(addr) != want:
+            return False, text, addr
+    return True, text, None
+
+
+def damage_note() -> str:
+    """What has already been erased - never claim "nothing" when it is false."""
+    if not TOUCHED:
+        return "    nothing was erased.\n"
+    return (
+        "    erased but NOT written: " + ", ".join(TOUCHED) + "\n"
+        "    sector 0 @ 0x08000000 holds the vector table: if it is in that "
+        "list the board\n"
+        "    will not boot (pc 0xfffffffe / msp 0xfffffffc) until it is "
+        "flashed again\n"
+    )
 
 
 def link_unhealthy(kind: str, text: str, tries: int) -> "SystemExit":
@@ -317,8 +404,8 @@ def link_unhealthy(kind: str, text: str, tries: int) -> "SystemExit":
     sys.stderr.write(
         f"FLASH_FAILED {kind}: SWD link unhealthy ({tries} failures in a row) - "
         f"{explain(kind)}\n"
-        "    nothing was erased.\n"
-        "    triage: tools/stlink_soak.sh (count good connects), then re-seat "
+        + damage_note()
+        + "    triage: tools/stlink_soak.sh (count good connects), then re-seat "
         "contact, check GND/SWCLK/SWDIO and target power\n"
     )
     return SystemExit(2)
@@ -327,12 +414,13 @@ def link_unhealthy(kind: str, text: str, tries: int) -> "SystemExit":
 def pick_work_area(speed: int) -> tuple[int, int, str]:
     if FORCED_WA:
         phys = int(FORCED_WA, 0)
-        ok, text = ram_usable(phys, WA_SIZE, speed)
+        ok, text, bad = ram_usable(phys, WA_SIZE, speed)
         if not ok:
             sys.stderr.write(text)
             sys.stderr.write(
-                f"FLASH_FAILED ram: work area {phys:#x} (forced) is not writable "
-                f"- {explain('ram')}\n"
+                f"FLASH_FAILED ram: work area {phys:#x} (forced) is not writable"
+                + (f" at {bad:#x}" if bad else "")
+                + f" - {explain('ram')}\n" + damage_note()
             )
             raise SystemExit(2)
         print(f"work area {phys:#x} (forced) - RAM check ok", flush=True)
@@ -347,18 +435,19 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
         # anything, so each candidate must pass twice when the first try
         # failed for link reasons (SWD loss / dead AP).
         for try_no in (1, 2):
-            ok, text = ram_usable(phys, usable, speed)
+            ok, text, bad = ram_usable(phys, usable, speed)
             if ok:
                 print(f"work area {label} @ {phys:#x} - RAM check ok", flush=True)
                 return phys, WA_SIZE, label
 
             kind = kind_of(text)
+            where = f" at {bad:#x}" if bad else ""
+            print(
+                f"work area {label} @ {phys:#x} - RAM check FAILED{where} "
+                f"({explain(kind)})",
+                flush=True,
+            )
             if kind in ("swd", "ap"):
-                print(
-                    f"work area {label} @ {phys:#x} - RAM check FAILED "
-                    f"({explain(kind)})",
-                    flush=True,
-                )
                 if try_no == 2:
                     # Probing further RAM is pointless: the bus itself is dying,
                     # so stop instead of "succeeding" on a luckier address.
@@ -366,12 +455,7 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
                 time.sleep(0.5)
                 continue
 
-            failures.append(f"    {label} @ {phys:#x}: {explain(kind)}")
-            print(
-                f"work area {label} @ {phys:#x} - RAM check FAILED "
-                f"({explain(kind)})",
-                flush=True,
-            )
+            failures.append(f"    {label} @ {phys:#x}{where}: {explain(kind)}")
             break
 
     sys.stderr.write("no writable work area for the flash loader:\n")
@@ -379,7 +463,7 @@ def pick_work_area(speed: int) -> tuple[int, int, str]:
         sys.stderr.write(line + "\n")
     sys.stderr.write(
         "FLASH_FAILED ram: no writable RAM for the flash loader - target not "
-        "halted or SWD contact broken\n"
+        "halted or SWD contact broken\n" + damage_note()
     )
     raise SystemExit(2)
 
@@ -499,6 +583,60 @@ def halt_target(speed: int) -> str:
     raise SystemExit(exit_code)
 
 
+# ------------------------------------------------------------- board state checks
+
+def word_from(text: str, addr: int) -> int | None:
+    """Last `mdw` dump value for `addr` in an OpenOCD log."""
+    found = None
+    for m in re.finditer(rf"0x{addr:08x}:\s*([0-9a-f]{{8}})", text, re.I):
+        found = m.group(1)
+    return int(found, 16) if found else None
+
+
+def read_vectors(speed: int) -> tuple[int | None, int | None]:
+    """SP/PC from the vector table at 0x08000000 (0xFFFFFFFF = blank sector)."""
+    cmds = [
+        f"init; adapter speed {speed}",
+        "catch {halt}",
+        f"mdw {FLASH_BASE:#x}",
+        f"mdw {FLASH_BASE + 4:#x}",
+        "exit",
+    ]
+    rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 90))
+    return word_from(text, FLASH_BASE), word_from(text, FLASH_BASE + 4)
+
+
+def vectors_state(sp: int | None) -> bool | None:
+    """True = blank/garbage vector table, False = plausible, None = unknown.
+
+    A linker puts the initial SP at the *top* of a RAM region (0x24080000 on
+    this part), so the upper bound has to be inclusive - 0xFFFFFFFC (erased
+    sector) and 0 (read failed / blank) are what we are looking for.
+    """
+    if sp is None:
+        return None
+    if sp in (0, 0xFFFFFFFF):
+        return True
+    return not any(lo <= sp <= hi for lo, hi in RAM_RANGES)
+
+
+def probed_flash_size(speed: int) -> int | None:
+    """Device flash size in bytes from the driver's own probe, if it answers."""
+    rc, text = run_openocd(
+        [
+            f"init; adapter speed {speed}",
+            "catch {halt}",
+            "flash probe 0",
+            "exit",
+        ],
+        timeout=min(OCD_TIMEOUT, 90),
+    )
+    m = None
+    for m in re.finditer(r"flash size probed value\s+(\d+)\s*k", text, re.I):
+        pass
+    return int(m.group(1)) * 1024 if m else None
+
+
 # ---------------------------------------------------------------------- flashing
 
 n_chunks = (len(image) + SECTOR - 1) // SECTOR
@@ -513,22 +651,99 @@ speed = SPEED
 # Stop the core first: without a confirmed halt nothing may be erased, and the
 # RAM probe is only meaningful once the target is under control.
 halt_mode = halt_target(speed)
+
+# Is there a vector table at 0x08000000? A previous run that erased sector 0 and
+# then failed to write it leaves the board booting from 0xFFFFFFFF: SP
+# 0xFFFFFFFC, pc 0xFFFFFFFE, hard fault loop. It still flashes over SWD, but it
+# will not run - and jogging/power-cycling will not fix it.
+sp, pc = read_vectors(speed)
+blank = vectors_state(sp)
+if blank:
+    print(
+        f"FLASH_EVENT vectors_blank SP={sp:#010x} PC={(pc if pc is not None else 0):#010x}",
+        flush=True,
+    )
+    print(
+        "WARNING: sector 0 @ 0x08000000 has no valid vector table - the board "
+        "cannot boot\n"
+        "    (pc 0xfffffffe / msp 0xfffffffc is what an erased sector looks "
+        "like: an earlier\n"
+        "    flash erased sector 0 and then failed before writing it back).",
+        flush=True,
+    )
+    if flash_base > FLASH_BASE:
+        sys.stderr.write(
+            f"FLASH_FAILED vectors: this image starts at {flash_base:#x}, so it "
+            "cannot restore the vector table at 0x08000000 - the board would "
+            "stay unbootable\n"
+            "    flash a full image from 0x08000000 (bootloader + app) instead\n"
+        )
+        raise SystemExit(5)
+    print(
+        "    this flash writes sector 0 last, so the board becomes bootable "
+        "only if that\n"
+        "    final sector verifies - do not power-cycle in between",
+        flush=True,
+    )
+elif blank is False:
+    print(f"vector table ok (SP={sp:#010x} PC={pc:#010x})", flush=True)
+
+if PROBE_SIZE:
+    device_flash = probed_flash_size(speed)
+    if device_flash:
+        dev_end = FLASH_BASE + device_flash
+        print(f"device flash: probed {device_flash // 1024} KiB "
+              f"({FLASH_BASE:#x}..{dev_end:#x})", flush=True)
+        if end > dev_end:
+            print(
+                "FLASH_WARN image does not fit the probed flash size\n"
+                f"    image : {flash_base:#010x}..{end:#010x} "
+                f"({len(image)} bytes)\n"
+                f"    device: {FLASH_BASE:#010x}..{dev_end:#010x} "
+                f"({device_flash // 1024} KiB)\n"
+                "    This part reports less flash than the 2 MiB the tooling "
+                "assumes (H743xG is\n"
+                "    1 MiB, an IndiH743 is normally 2 MiB). Sectors past "
+                f"{dev_end:#010x} do not\n"
+                "    exist, so the write would die there - after erasing "
+                "everything before it.",
+                flush=True,
+            )
+            if not ALLOW_OVERSIZE:
+                sys.stderr.write(
+                    "FLASH_FAILED size: refusing to write "
+                    f"{len(image)} bytes into {device_flash // 1024} KiB of "
+                    "flash - nothing was erased\n"
+                    "    build the image for this part (FLASH_SIZE_KB), or "
+                    "redo the probe if the\n"
+                    "    part is really 2 MiB (STLINK_ALLOW_OVERSIZE=1 forces "
+                    "the write)\n"
+                )
+                raise SystemExit(1)
+
 wa_phys, wa_size, wa_label = pick_work_area(speed)
 
 tmpdir = Path(tempfile.mkdtemp(prefix="stlink_flash_"))
 started = time.monotonic()
 
 
-def sector_commands(erase_start: int, erase_len: int, part: Path, addr: int) -> str:
+def sector_commands(
+    erase_start: int, erase_len: int, part: Path, addr: int, do_erase: bool = True
+) -> str:
     """One self-contained session: halt out of reset, then erase/write/verify.
 
     The stages only run when the halt succeeded, so a core that will not stop
-    can never be erased underneath.
+    can never be erased underneath. `do_erase=False` retries the write of a
+    sector whose erase already completed - erasing again on every attempt is
+    how a link glitch turns into a blank sector 0.
     """
-    stages = [
-        'echo "FLASH_EVENT halt_ok"',
-        'echo "FLASH_STAGE erase"',
-        f"flash erase_address {erase_start:#x} {erase_len:#x}",
+    stages = ['echo "FLASH_EVENT halt_ok"']
+    if do_erase:
+        stages += [
+            'echo "FLASH_STAGE erase"',
+            f"flash erase_address {erase_start:#x} {erase_len:#x}",
+        ]
+    stages += [
         'echo "FLASH_STAGE write"',
         f"flash write_image {part} {addr:#x}",
         'echo "FLASH_STAGE verify"',
@@ -552,13 +767,32 @@ def sector_commands(erase_start: int, erase_len: int, part: Path, addr: int) -> 
 
 try:
     parts: list[Path] = []
+    pieces: list[bytes] = []
     good_speed = speed
+    done = 0
     for n in range(n_chunks):
         piece = image[n * SECTOR:(n + 1) * SECTOR]
         padded = piece if len(piece) % 32 == 0 else piece + b"\xFF" * (32 - len(piece) % 32)
         part = tmpdir / f"part_{n:02d}.bin"
         part.write_bytes(padded)
         parts.append(part)
+        pieces.append(piece)
+
+    # Sector 0 holds the vector table (and, on ArduPilot H7, the bootloader).
+    # Write it last: if the link dies at sector 5 the board still boots the old
+    # firmware instead of sitting in a hard-fault loop on a blank vector table.
+    order = list(range(n_chunks))
+    if n_chunks > 1:
+        order = order[1:] + [0]
+        print(
+            f"sector order: 1..{n_chunks - 1}, then 0 - sector 0 (vector table / "
+            "bootloader) is written last",
+            flush=True,
+        )
+
+    for n in order:
+        piece = pieces[n]
+        part = parts[n]
 
         addr = flash_base + n * SECTOR
         # Erase whole sectors that the chunk touches (erase works in sectors).
@@ -566,28 +800,43 @@ try:
         erase_len = (
             ((addr + len(piece) - erase_start) + SECTOR - 1) // SECTOR
         ) * SECTOR
+        note = " - vector table, last" if n == 0 and n_chunks > 1 else ""
         print(
             f"  sector {n}/{n_chunks - 1} @ {addr:#x} ({len(piece)} bytes, "
-            f"erase {erase_len // 1024} KiB)",
+            f"erase {erase_len // 1024} KiB){note}",
             flush=True,
         )
 
+        entry = f"sector {n} @ {addr:#x}"
+        erased_here = False
         last_text = ""
         kind = "unknown"
         ok = False
         for attempt in range(1, ATTEMPTS + 1):
             cmds = wa_commands(wa_phys, wa_size) + [
                 f"init; adapter speed {speed}",
-                sector_commands(erase_start, erase_len, part, addr),
+                sector_commands(erase_start, erase_len, part, addr, not erased_here),
                 "exit",
             ]
             rc, last_text = run_openocd_connect(cmds)
             stage = stage_of(last_text)
             ok = rc == 0 and stage == "done" and "verified" in last_text.lower()
             if ok:
+                if entry in TOUCHED:
+                    TOUCHED.remove(entry)
                 break
 
             kind = kind_of(last_text)
+            erase_done = stage in ("write", "verify", "done") or (
+                "erased address" in last_text
+            )
+            if erase_done and entry not in TOUCHED:
+                TOUCHED.append(entry)
+            # Retry without a second erase - but only while the link is sane.
+            # After a link failure the erase result is not trustworthy, so the
+            # retry erases again.
+            erased_here = erase_done and kind not in ("swd", "ap")
+
             detail = (
                 f"halt not confirmed" if kind == "halt" else f"failed during {stage or 'init'}"
             )
@@ -603,6 +852,13 @@ try:
             if attempt == ATTEMPTS:
                 break
 
+            if erased_here and kind not in ("halt", "swd", "ap"):
+                print(
+                    f"    sector {n} @ {addr:#x} is already erased - retrying the "
+                    "write only (no second erase)",
+                    flush=True,
+                )
+
             if kind in ("halt", "swd"):
                 # Re-halt from scratch; the chip may have been reset by its
                 # watchdog, which also means it is safe to slow SWD down.
@@ -612,11 +868,16 @@ try:
                 except SystemExit:
                     pass
             elif kind == "ram":
+                # RAM answered the footprint probe but not the loader: re-probe
+                # before writing again, and stop rather than grind on a dead bus.
                 FORCED_WA = ""
-                try:
-                    wa_phys, wa_size, wa_label = pick_work_area(speed)
-                except SystemExit:
-                    pass
+                if erased_here:
+                    print(
+                        f"    sector {n} @ {addr:#x} is erased but NOT written - "
+                        "re-probing the loader RAM",
+                        flush=True,
+                    )
+                wa_phys, wa_size, wa_label = pick_work_area(speed)
             elif kind == "ap":
                 # Debug-register writes failing: try slower before blaming the
                 # harness, then stop rather than erase on a sick link.
@@ -635,10 +896,11 @@ try:
             sys.stderr.write(last_text)
             sys.stderr.write(
                 f"FLASH_FAILED {kind}: sector {n} @ {addr:#x} - {explain(kind)}\n"
+                + damage_note()
             )
             raise SystemExit(3)
 
-        done = sum(p.stat().st_size for p in parts[:n + 1])
+        done += len(piece)
         elapsed = time.monotonic() - started
         rate = done / 1024 / elapsed if elapsed > 0 else 0
         print(f"    verified ({done} bytes, {rate:.0f} KiB/s)", flush=True)
