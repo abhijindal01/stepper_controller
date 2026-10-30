@@ -15,6 +15,42 @@ ROOT="$(dirname "$HERE")"
 FAILED=0
 CHECKS=0
 
+# ---------------------------------------------------------------- no hardware
+# The wrapper picks its writer with `command -v st-flash`, so any test that
+# only puts tests/stubs (fake OpenOCD) on PATH used to reach the real
+# /usr/bin/st-flash and program the board on the fixture. Shadow every PATH
+# directory that holds a real programmer with a copy that lacks it: the tests
+# then see exactly the stubs they put on PATH and nothing else.
+REAL_TOOLS="st-flash st-info st-util openocd STM32_Programmer_CLI"
+SHADOW_ROOT="$(mktemp -d)"
+trap 'rm -rf "$SHADOW_ROOT"' EXIT
+SAFE_PATH=""
+IFS=: read -r -a _path_dirs <<< "$PATH"
+for _dir in "${_path_dirs[@]}"; do
+    _hit=0
+    for _tool in $REAL_TOOLS; do
+        [ -e "$_dir/$_tool" ] && _hit=1
+    done
+    if [ "$_hit" = "1" ]; then
+        _shadow="$SHADOW_ROOT/$(printf '%s' "$_dir" | tr '/' '_')"
+        mkdir -p "$_shadow"
+        for _f in "$_dir"/*; do
+            case " $REAL_TOOLS " in *" $(basename "$_f") "*) continue ;; esac
+            ln -s "$_f" "$_shadow/" 2>/dev/null
+        done
+        _dir="$_shadow"
+    fi
+    SAFE_PATH="${SAFE_PATH:+$SAFE_PATH:}$_dir"
+done
+export PATH="$SAFE_PATH"
+for _tool in $REAL_TOOLS; do
+    if command -v "$_tool" >/dev/null 2>&1; then
+        printf 'refusing to run: real %s still on PATH (%s)\n' \
+            "$_tool" "$(command -v "$_tool")" >&2
+        exit 2
+    fi
+done
+
 pass() { CHECKS=$((CHECKS + 1)); printf '  PASS    %s\n' "$1"; }
 fail() { CHECKS=$((CHECKS + 1)); FAILED=1; printf '  FAIL    %s\n' "$1"; }
 
@@ -123,6 +159,10 @@ TMP_FLASH="$(mktemp -d)"
 IMAGE_HEX="$TMP_FLASH/combined.hex"
 IMAGE_BIN="$TMP_FLASH/combined.bin"
 OCD_LOG="$TMP_FLASH/ocd.log"
+# The image below fits sector 0, which `auto` now hands to the direct writer.
+# Point it at nothing so these tests keep exercising st-flash/OpenOCD; the
+# direct backend has its own section further down.
+export STLINK_DIRECT_WRITER="$TMP_FLASH/no-direct-writer"
 
 python3 - "$IMAGE_BIN" "$IMAGE_HEX" <<'PY'
 import sys
@@ -637,6 +677,65 @@ else
     fail "missing st-flash is a usage error when forced (exit $RC, wanted 1)"
 fi
 expect_log "the fix is spelled out" "stlink-tools"
+
+# ------------------------------------------------------------ direct backend
+# st-flash failed on the pad too ("Flash programming error: 0x00040000"), so a
+# sector-0 image goes through tools/h7_direct/h7_robust_write.py. Stubbed here:
+#   tests/stubs/direct/h7_robust_write.py
+printf '\nFlash wrapper (direct backend)\n'
+DIRECT_LOG="$TMP_FLASH/direct.log"
+DIRECT_STUB="$HERE/stubs/direct/h7_robust_write.py"
+
+run_direct() {  # run_direct <label> <want> [env...]
+    rm -f "$DIRECT_LOG"
+    local label="$1" want="$2"
+    shift 2
+    run_sflash "$label" "$want" STLINK_DIRECT_WRITER="$DIRECT_STUB" \
+        STUB_DIRECT_LOG="$DIRECT_LOG" "$@"
+}
+
+run_direct "a sector-0 image goes to the direct writer" 0
+expect_log "auto picks direct" "backend: direct"
+expect_log "the writer finished" "ROBUST_WRITE_DONE"
+expect_log "OpenOCD still verifies the readback" "Verified OK"
+expect_log "FLASH_OK names the backend" "backend direct"
+reject_log "st-flash is not used" "bytes written and verified"
+if grep -q -- "--erase" "$DIRECT_LOG" 2>/dev/null; then
+    fail "a clean sector is not erased first"
+else
+    pass "a clean sector is not erased first"
+fi
+
+run_direct "foreign data in sector 0 is erased, then written" 0 STUB_DIRECT_FOREIGN=1
+expect_log "the erase is announced" "erasing it and writing again"
+if [ "$(grep -c -- "--erase" "$DIRECT_LOG" 2>/dev/null)" = "1" ]; then
+    pass "exactly one --erase run"
+else
+    fail "exactly one --erase run"
+fi
+
+run_direct "a writer that gives up fails the flash" 3 STUB_DIRECT_DIE=1
+expect_log "the failure is classified" "FLASH_FAILED direct"
+reject_log "a failed write is never released" "FLASH_OK"
+
+run_direct "a writer that did not write fails the direct flash" 3 STUB_DIRECT_NOWRITE=1
+expect_log "mismatch is reported" "FLASH_FAILED verify: two bulk readbacks agree"
+reject_log "a real mismatch is never released" "FLASH_OK"
+
+# The pad's dongle drops and shifts words in bulk reads; one bad bulk read must
+# not overrule the writer's word-by-word readback.
+run_direct "a bulk read that disagrees with itself does not fail the flash" 0 \
+    STUB_DUMP_UNSTABLE=1
+reject_log "an unstable readback is not called a mismatch" "FLASH_FAILED"
+
+run_flash_with_image "direct refuses an image past sector 0" 1 \
+    "$TMP_FLASH/two_sectors.bin" STLINK_BACKEND=direct \
+    STLINK_DIRECT_WRITER="$DIRECT_STUB" STUB_DIRECT_LOG="$DIRECT_LOG"
+expect_log "the limit is spelled out" "only knows sector 0"
+
+run_flash_with_image "auto skips direct for a two-sector image" 0 \
+    "$TMP_FLASH/two_sectors.bin" STLINK_DIRECT_WRITER="$DIRECT_STUB"
+expect_log "auto falls back to st-flash" "backend: stflash"
 
 # Per-session logs land in STLINK_LOG_DIR, named and readable.
 mkdir -p "$TMP_FLASH/logs"
