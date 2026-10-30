@@ -19,13 +19,15 @@
 #     unknown/unexpected STLINK status code 0x12 / 0x18
 #
 # and a failed write is only harmless while nothing has been erased. Once the
-# chip is blank the app cannot be restored with the tool that erased it. So this
-# script tries three writers in order, from the one that works here outwards:
+# chip is blank the app cannot be restored with the tool that erased it, so
+# OpenOCD's `program` is not used here at all. This script tries two writers:
 #
-#   1. st-flash --connect-under-reset write   (stlink-tools) - the only writer
-#      that has ever completed on this pad
+#   1. st-flash --connect-under-reset write   (stlink-tools)
 #   2. STM32_Programmer_CLI (STM32CubeProgrammer) under reset
-#   3. openocd `program ... verify`          - last resort, with a warning
+#
+# st-flash has since failed on this pad too ("Flash programming error:
+# 0x00040000"). For sector 0 - a bootloader - use tools/stlink_flash.sh first:
+# its default direct writer is what put the bootloader back.
 #
 # Every step is judged by a *different* tool than the one that wrote: OpenOCD's
 # `verify_image` readback. st-flash prints "Flash written and verified! jolly
@@ -123,7 +125,7 @@ fi
 SIZE=$(stat -c %s "$IMG")
 
 printf 'recovering with %s (%s bytes) at %s\n' "$IMG" "$SIZE" "$BASE"
-printf 'writers: st-flash=%s cube=%s openocd=%s\n' \
+printf 'writers: st-flash=%s cube=%s  (readback: openocd=%s)\n' \
     "$(command -v "$STFLASH" || echo missing)" \
     "$(command -v "$CUBE" || echo missing)" \
     "$(command -v "$OPENOCD" || echo missing)"
@@ -135,7 +137,7 @@ command -v "$STFLASH" >/dev/null 2>&1 && have_stflash=1
 command -v "$CUBE" >/dev/null 2>&1 && have_cube=1
 command -v "$OPENOCD" >/dev/null 2>&1 && have_ocd=1
 
-if [[ $((have_stflash + have_cube + have_ocd)) -eq 0 ]]; then
+if [[ $((have_stflash + have_cube)) -eq 0 ]]; then
     printf 'no writer installed: apt-get install stlink-tools, or install STM32CubeProgrammer\n' >&2
     exit 2
 fi
@@ -190,7 +192,7 @@ else
     info "OpenOCD missing - skipping the examine, st-flash will reset under reset"
 fi
 
-# --------------------------------------------------- 1. st-flash (works here)
+# ------------------------------------------------------------- 1. st-flash
 attempt_write_stflash() {
     local n
     for (( n = 1; n <= TRIES; n++ )); do
@@ -216,32 +218,12 @@ attempt_write_cube() {
         -w "$IMG" "$BASE" -v
 }
 
-# ----------------------------------------- 3. OpenOCD (last resort, warns)
-attempt_write_openocd() {
-    step "3. openocd program ... verify (LAST RESORT)"
-    cat <<'EOF'
-   This is the path that dies on this fixture: the loader download fails at
-   0x24001874 / 0x5200200c and the dongle may drop off USB. It is tried only
-   after st-flash and CubeProgrammer both failed, and it gets one attempt so a
-   half-written sector is not retried on a sick link.
-EOF
-    run "openocd program" "$OPENOCD" -f "$CFG" \
-        -c "init; adapter speed ${SPEED}" \
-        -c 'set _rc [catch {reset halt} _e]' \
-        -c 'if {$_rc != 0} { echo "RECOVER_NO_HALT"; exit 1 }' \
-        -c "program $IMG ${BASE} verify" \
-        -c "exit"
-}
-
 WRITTEN=0
 if [[ "$have_stflash" = "1" ]]; then
     attempt_write_stflash && WRITTEN=1
 fi
 if [[ "$WRITTEN" = "0" && "$have_cube" = "1" ]]; then
     attempt_write_cube && WRITTEN=1
-fi
-if [[ "$WRITTEN" = "0" && "$have_ocd" = "1" ]]; then
-    attempt_write_openocd && WRITTEN=1
 fi
 
 if [[ "$DRY_RUN" = "1" ]]; then
@@ -257,6 +239,8 @@ RECOVER_FAILED: no writer could put $SIZE bytes at $BASE.
 What that does and does not mean:
   * a failed *write* does not damage anything by itself - sector 0 is erased and
     rewritten by each of these tools, so the next attempt starts over
+  * for a bootloader (sector 0) run tools/stlink_flash.sh: its direct writer
+    works on this pad where st-flash does not
   * if the board was already blank it stays blank: nothing to lose, keep trying
   * the dongle (0483:3748, garbage serial) re-enumerates under load. Move it to
     a powered hub / a direct Pi USB2 port with the shortest cable you have,
@@ -265,8 +249,8 @@ EOF
     exit 3
 fi
 
-# ------------------------------------- 4. read it back with a different tool
-step "4. verify with OpenOCD's readback (the writer does not vote)"
+# ------------------------------------- 3. read it back with a different tool
+step "3. verify with OpenOCD's readback (the writer does not vote)"
 if [[ "$have_ocd" = "0" ]]; then
     info "OpenOCD missing - install it before trusting any write"
     exit 4
@@ -282,7 +266,7 @@ VRC=$?
 
 if [[ $VRC -eq 0 ]] && grep -qi "verified" "$VERIFY_LOG"; then
     ok "readback matches ($(grep -io 'verified [0-9]* bytes[^)]*' "$VERIFY_LOG" | head -1))"
-    step "5. release the target"
+    step "4. release the target"
     if "$OPENOCD" -f "$CFG" -c "init; adapter speed ${SPEED}" \
         -c "reset run" -c 'echo "RECOVER_RUN"' -c "exit" 2>&1 | grep -q RECOVER_RUN
     then
