@@ -189,6 +189,23 @@ FLASH_FAILURE_KINDS = {
         "Read-back did not match the image - re-flash; if it repeats, suspect "
         "the flash bank or the SWD link.",
     ),
+    "brownout": (
+        4,
+        "brownout",
+        "The target dropped off SWD the moment the flash controller was "
+        "programmed (FLASH_CR 0x5200200C) - that is a brownout or a reset "
+        "during programming, not a tool problem. Check the pad supply, the "
+        "GND return and bulk capacitance, power-cycle the pad, then retry. "
+        "Emulated by OpenOCD as \"error during the lock of flash\" + "
+        "\"Error closing APs\".",
+    ),
+    "stflash": (
+        4,
+        "flash_fail",
+        "st-flash could not write the image (SWD entry or the write "
+        "itself). Re-run it - this dongle succeeds on a retry - and watch "
+        "`dmesg -T -w | grep -iE \"usb|stlink\"` for USB resets.",
+    ),
     "swd": (
         3,
         "swd_lost",
@@ -421,7 +438,15 @@ def probe(timeout: float = 20) -> dict:
 FLASH_TIMEOUT = float(os.environ.get("STLINK_FLASH_TIMEOUT") or 1800)
 #: Link states that are worth retrying - they are transient on this fixture,
 #: and the same command often succeeds a couple of seconds later.
-TRANSIENT_STATES = ("swd_lost", "ap_fail", "link_unhealthy", "halt_fail")
+TRANSIENT_STATES = (
+    "swd_lost",
+    "ap_fail",
+    "link_unhealthy",
+    "halt_fail",
+    # A brownout resets the target mid-program; the flash wrapper retries it,
+    # so the API may too.
+    "brownout",
+)
 PRECHECK_N = int(os.environ.get("STLINK_FLASH_PRECHECK_N") or 3)
 PRECHECK_MIN_PCT = float(os.environ.get("STLINK_FLASH_PRECHECK_MIN") or 66)
 FLASH_RETRIES = int(os.environ.get("STLINK_FLASH_RETRIES") or 2)

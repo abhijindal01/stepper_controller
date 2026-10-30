@@ -1,14 +1,20 @@
 # ST-LINK pad-test flash handoff (Pi fixture → Flask applet)
 
-**Host:** `assurance` (RPi 4B) · Flask on `:5000` · ST-LINK/V2 `0483:3748` FW **V2J46S7**  
-**OpenOCD:** `/usr/bin/openocd` `0.12.0+rpt…` (no CubeProgrammer / `st-flash` installed)  
-**No NRST** on pogo harness — only SWCLK, SWDIO, GND (+ VTarget sense).
+**Host:** `assurance` (RPi 4B) · Flask on `:5000` · ST-LINK/V2 `0483:3748` FW **V2J46S7** (clone)  
+**OpenOCD:** `/usr/bin/openocd` `0.12.0+rpt…` — probe, erase and readback only  
+**st-flash:** `stlink-tools` 1.8.0 — **the write path** (see *Backend*)  
+**No NRST** on pogo harness — only SWCLK, SWDIO, GND (+ VTarget sense).  
+**Part:** STM32H743**xG**, **1 MiB** flash (confirmed by `st-flash` *and* OpenOCD), 128 KiB pages.
+
+> Read *Backend* and *Mass erase* before flashing anything. On this fixture the
+> tool that erases is not the tool that can write, and the one time that was
+> ignored the pad was left blank for an afternoon.
 
 This note is the contract for the Flask ST-LINK applet session.
 
 ---
 
-## 1. OpenOCD connect / flash recipe (proven on this Pi)
+## 1. SWD connect / flash recipe (proven on this Pi)
 
 ### Working shape
 
@@ -49,9 +55,52 @@ Always use the helper script:
   /home/quality/stepper_controller/firmware/indi_h743/combined.bin
 ```
 
-It erases + writes one 128 KiB sector per OpenOCD session and verifies each
-sector plus the whole image. Do **not** use `program ... verify exit`: on this
-H7 + ST-LINK/V2 combo it fails mid multi-sector erase/algo load.
+It picks a writer (see *Backend*), writes the image and verifies the readback.
+Do **not** use OpenOCD `program ... verify exit` or `flash write_image`: on this
+H7 + ST-LINK/V2 combo the flash loader download fails part-way through, and
+OpenOCD cannot write this board at all (60+ attempts, 12–1000 kHz, AXI SRAM and
+SRAM1 work areas).
+
+#### Backend: OpenOCD erases, `st-flash` writes
+
+Reproduced signature of an OpenOCD write on this fixture - note where it dies
+(FLASH_CR, i.e. the moment the charge pump starts):
+
+```text
+Error: Failed to write memory at 0x24001874          # loader download
+Error: error while writing to address 0x5200200c     # FLASH_CR
+Error: error during the lock of flash
+Error: Error closing APs
+unknown/unexpected STLINK status code 0x12 / 0x18
+```
+
+`st-flash` (stlink-tools 1.8.0) boots its own loader and completes:
+
+```bash
+st-flash --connect-under-reset write /tmp/bl_sector0.bin 0x08000000
+# STM32H74x_H75x: 128 KiB SRAM, 1024 KiB flash in at least 128 KiB pages.
+# 131072/131072 bytes written
+# Flash written and verified! jolly good!
+```
+
+so the wrapper resolves a backend automatically:
+
+| `STLINK_BACKEND` | Behaviour |
+|------------------|-----------|
+| `auto` (default) | `st-flash` when it is installed, OpenOCD otherwise |
+| `stflash` | force `st-flash` (fails with exit 1 and an install hint if missing) |
+| `ocd` | force the old OpenOCD per-sector path |
+
+The writer never gets to vote on its own work: after `st-flash` reports success
+the wrapper reads the flash back with OpenOCD `verify_image` and only then
+prints `Verified OK` / `FLASH_OK`. `st-flash` retries are expected - this dongle
+fails the first `--connect-under-reset` (`WARN common.c: NRST is not connected`,
+`ERROR Soft reset failed: error write to AIRCR`, `Failed to enter SWD mode`) and
+succeeds on the next attempt, so the wrapper retries and then trusts the readback
+only.
+
+`st-info --probe` is asked for the part size as well; if it disagrees with the
+OpenOCD probe the write is refused before anything is erased.
 
 Knobs (environment):
 
@@ -76,6 +125,12 @@ Knobs (environment):
 | `STLINK_FLASH_PRECHECK_N` / `_MIN` | `3` / `66` | Sessions and pass rate the pre-check needs |
 | `STLINK_FLASH_RETRIES` | `2` | Retries of a *transient* link failure (`swd_lost`, `ap_fail`, `halt_fail`) |
 | `STLINK_FLASH_RETRY_DELAY` | `2` | Seconds between those retries (multiplied by attempt) |
+| `STLINK_BACKEND` | `auto` | `auto` / `stflash` / `ocd` writer (see *Backend*) |
+| `STLINK_STFLASH` | `st-flash` | `st-flash` binary used by the wrapper |
+| `STLINK_MASS_ERASE` | `0` | Erase the whole flash first (see *Mass erase* - the size check still runs first) |
+| `STLINK_VERIFY_OCD` | `1` | Verify the written image with OpenOCD's readback |
+| `STLINK_LOG_DIR` | `/tmp` | Where per-session logs (`stlink_flash_*.log`) are kept |
+| `STLINK_KEEP_LOGS` | `1` | Keep those logs (`0` = only print them) |
 
 ### First: is the SWD link healthy?
 
@@ -308,6 +363,9 @@ the rest of the image with it.
 | `Failed to write/read memory at 0xE000xxxx`, `Execution of event examine-end failed` | core debug registers unreachable: link/AP failing | run `tools/stlink_soak.sh`; fix GND return / contact / target power |
 | `FLASH_FAILED swd: SWD link unhealthy` | link died during the work-area probe | same as above - do not retry the flash |
 | `no writable RAM for the flash loader` | no halt + no reachable RAM | re-seat, power-cycle, retry |
+| `error while writing to address 0x5200200c` + `error during the lock of flash` + `Error closing APs` | the AP dies exactly when FLASH_CR is programmed: **brownout / reset during programming**, not a tool bug | reported as `FLASH_FAILED brownout:`; check pad supply, GND return, bulk capacitance, de-energise the steppers, re-seat and retry |
+| `WARN common.c: NRST is not connected`, `ERROR Soft reset failed: error write to AIRCR`, `Failed to enter SWD mode` | `st-flash` could not reset into SWD (clone dongle re-enumerated, or no contact) | retry - the same command succeeds minutes later; `dmesg -T -w` shows the USB resets (grep for `usb`/`stlink`) |
+| `FLASH_FAILED stflash:` | `st-flash` failed to write on every attempt | re-run, then `tools/stlink_recover.sh`; move the dongle to a powered hub / direct USB2 port |
 
 Exit codes / markers from the wrapper: `0` ok (`FLASH_OK ...`),
 `1` usage or image-range error (including an image that does not fit the
@@ -376,16 +434,104 @@ FLASH_WARN image does not fit the probed flash size
 FLASH_FAILED size: refusing to write 1645996 bytes into 1024 KiB of flash - nothing was erased
 ```
 
-Two explanations, both must be ruled out before flashing:
+**Settled: the part is 1 MiB.** `st-flash` agrees with OpenOCD
+(`STM32H74x_H75x: 128 KiB SRAM, 1024 KiB flash in at least 128 KiB pages.`),
+`chipid: 0x400` = 1024 KiB (an H743**xG**, or a relabelled H750 - `VIT6` would
+be 2 MiB, `VGT6` 1 MiB). The consequences:
 
-- the MCU really is a 1 MiB H743 (`xG`) or a relabelled H750 - ArduCopter does
-  not fit, the hwdef needs `FLASH_SIZE_KB 1024` and a trimmed build;
-- the probe read the wrong value (a flaky link can corrupt the `FLASHSIZE`
-  register read at `0x1FF1E880`) - re-probe at 50 kHz on a clean link with
-  `openocd -f tools/openocd_fixture.cfg -c "init; flash probe 0; exit"`.
+| Range | Size | Holds |
+|-------|------|-------|
+| `0x08000000`–`0x0801FFFF` | 128 KiB | sector 0: vector table + ArduPilot bootloader |
+| `0x08020000`–`0x080FFFFF` | **896 KiB** | the application - `text + data` must be ≤ **917,504 B** |
+
+The ArduCopter image that was queued is 1,645,996 bytes (`0x191DAC`), so it
+cannot be written to this part no matter which tool writes it. The build needs
+`FLASH_SIZE_KB 1024` plus `HAL_MINIMIZE_FEATURES` (and a check of
+`arm-none-eabi-size build/IndiH743/bin/arducopter`), or a 2 MiB board.
+
+`/tmp/bl_sector0.bin` (131,072 B, `SP=0x20000600 PC=0x080002E1`) was extracted
+from the pad and is the only copy of the bootloader that survived. Sector 0
+alone is enough to make the board bootable and reachable again.
 
 `0x08000000`..`0x0801FFFF` (the bootloader sector) is the same either way, so a
 sector-0-only write still fits and is enough to make the board bootable again.
+
+### Mass erase: only with a writer that works, and only after the size check
+
+`STLINK_MASS_ERASE=1` erases the whole flash before writing. Two rules make it
+safe, both learnt the hard way:
+
+1. **The size check runs first, always.** An image that does not fit the probed
+   flash is refused with `FLASH_FAILED size: ... nothing was erased` *before*
+   any erase command - even with `STLINK_MASS_ERASE=1`.
+2. **Only mass erase when the writer is known to work.** On 2026-10-29 a mass
+   erase ran while the write path was broken, and the pad was blank until
+   `st-flash --connect-under-reset` got it back. If `st-flash` is not installed
+   and the OpenOCD write path has not just succeeded, do not mass erase.
+
+```bash
+# erase everything, then write and verify - log line by log line
+STLINK_MASS_ERASE=1 tools/stlink_flash.sh /tmp/bl_sector0.bin 0x08000000
+#   mass erase requested - erasing the whole flash first (the size check above already passed)
+#   st-flash mass erase: ok
+#   st-flash: 131072 bytes written and verified (attempt 2)
+#   Verified OK
+#   FLASH_OK 131072 bytes @ 0x8000000 backend stflash ...
+```
+
+With `STLINK_BACKEND=ocd` the same knob runs `stm32h7x mass_erase 0` after a
+confirmed `reset halt`. Both paths record `whole flash (mass erase)` in
+`erased but NOT written:` if the write afterwards fails, so a blank board is
+never reported as "nothing was erased".
+
+### Recovery: put sector 0 back
+
+`tools/stlink_recover.sh` is the escalation when the normal flash path fails. It
+tries three writers in the order that works on this fixture and validates the
+result with a *different* tool than the one that wrote:
+
+```bash
+tools/stlink_recover.sh                          # default image
+tools/stlink_recover.sh /tmp/bl_sector0.bin      # bootloader only, 0x08000000
+tools/stlink_recover.sh image.bin 0x08020000     # app
+tools/stlink_recover.sh --dry-run image.bin      # plan only, touch nothing
+```
+
+| Step | Tool | Notes |
+|------|------|-------|
+| 0 | OpenOCD `reset halt` + `reg pc` | no halt ⇒ advise, do not write (exit 5 if no `st-flash` either) |
+| 1 | `st-flash --connect-under-reset write` | retried `STLINK_RECOVER_TRIES` (3) times, 2 s apart |
+| 2 | `STM32_Programmer_CLI -c port=SWD mode=UR reset=SWrst -w … -v` | only if CubeProgrammer is installed |
+| 3 | OpenOCD `program … verify` | last resort, one attempt, prints the failure signature |
+| 4 | OpenOCD `verify_image` | the verdict: `RECOVER_OK`, or exit 4 on mismatch |
+| 5 | OpenOCD `reset run` | else "power-cycle the pad" |
+
+Exit codes: `0` written and verified, `1` usage, `2` no writer installed,
+`3` every writer failed, `4` written but the readback disagrees, `5` no contact
+and no `st-flash`. It never mass erases.
+
+Keep the sector 0 image (`firmware/indi_h743/AP_Bootloader.bin`, or a copy of
+`/tmp/bl_sector0.bin`) outside the pad: it is the one thing an erase cannot
+bring back.
+
+### The clone dongle
+
+The ST-LINK on this fixture is a clone (`0483:3748`, FW `V2J46S7`,
+`V2J46S7`-ish serials that read as binary garbage, e.g. `` `hÿ( ``, `µ[Z\x1a`).
+Under load it re-enumerates:
+
+```text
+usb 1-1.3: reset full-speed USB device number 6 using xhci_hcd
+usb 1-1.3: device firmware changed
+```
+
+Every unexplained artefact in this note correlates with those lines: `status
+code 0x12`/`0x18`, 5.6 KiB/s dumps, `Failed to enter SWD mode`, the OpenOCD
+loader dying mid-write, `st-flash` needing a retry. Mitigations, cheapest first:
+shortest possible cable, direct Pi USB2 port (not the internal hub), powered
+hub, or replace the dongle with a genuine ST-LINK/V3. `dmesg -T -w | grep -iE
+"usb|stlink"` in a second terminal while flashing is the cheapest diagnostic
+there is.
 
 Do **not** rely on OpenOCD `reset` / `reset exit` for bring-up without NRST. After verify:
 
@@ -487,9 +633,12 @@ Success criteria in log: STLINK line, `Target voltage: 3.x`, target examined / h
 
 ### (b) Flash `.bin` or `.hex`
 
-- Prefer **combined** image for virgin MCUs (path under `firmware/indi_h743/`).
-- `.bin` → `program <file> 0x08000000 verify exit`
-- `.hex` → `program <file> verify exit` (addresses inside HEX)
+- Prefer the **combined** image for virgin MCUs (path under `firmware/indi_h743/`).
+- The applet never talks to OpenOCD directly: it runs `tools/stlink_flash.sh <file>`,
+  which chooses the writer (`st-flash`, see *Backend*), verifies the readback and
+  prints `FLASH_OK ...` / `FLASH_FAILED ...`.
+- Do **not** use `program <file> verify exit` - that is the OpenOCD write path
+  that dies on this fixture.
 
 Call `tools/stlink_flash.sh <file>` from a worker thread; stream stderr to the UI; never block the Flask process without a timeout (e.g. 120 s).
 

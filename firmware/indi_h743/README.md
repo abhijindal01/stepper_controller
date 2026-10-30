@@ -41,14 +41,31 @@ repairs it:
 ../tools/stlink_flash.sh combined.hex        # full image, sector 0 written last
 ```
 
-If the image does not fit the part (the pad reports 1024 KiB, see
-`docs/STLINK_FLASH_HANDOFF.md`), restore just the bootloader sector first - it
-carries the vector table and is the same 128 KiB on every H743:
+The pad is a **1 MiB** H743 (`xG`), so the app partition is
+`0x08020000`-`0x080FFFFF` = **896 KiB** and `text + data` must stay under
+917,504 B. A 1.6 MB ArduCopter image does not fit and is refused before
+anything is erased. Either build with `FLASH_SIZE_KB 1024` +
+`HAL_MINIMIZE_FEATURES` and check `arm-none-eabi-size`, or restore the
+bootloader sector - it carries the vector table and is the same 128 KiB on
+every H743:
 
 ```bash
 head -c 131072 combined.bin > bl_only.bin    # BL lives at the start of combined.bin
-../tools/stlink_flash.sh bl_only.bin 0x08000000
+../tools/stlink_flash.sh bl_only.bin 0x08000000      # st-flash does the write
 ```
+
+If that fails, the escalation ladder is `../tools/stlink_recover.sh`:
+
+```bash
+../tools/stlink_recover.sh bl_only.bin 0x08000000    # st-flash -> CubeProgrammer -> OpenOCD
+../tools/stlink_recover.sh --dry-run bl_only.bin     # show the plan only
+```
+
+It retries `st-flash --connect-under-reset` (the only writer that has ever
+completed on this board), falls back to CubeProgrammer and then OpenOCD, and
+judges the result with OpenOCD's readback - `st-flash` says "jolly good!" and is
+occasionally wrong. `RECOVER_OK` or nothing. Keep a copy of the bootloader
+outside the pad: it is the one thing an erase cannot bring back.
 
 Then check the board: `../tools/stlink_probe.sh` and `openocd ... -c "init;
 mdw 0x08000000; exit"` must return a stack pointer inside RAM

@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Fake `st-flash` (stlink-tools 1.8.0) for tests/check_scripts.sh.
+
+Only the two invocations tools/stlink_flash.sh uses are modelled:
+
+    st-flash --connect-under-reset erase
+    st-flash --connect-under-reset write <file> <addr>
+
+Environment:
+  STUB_STFLASH_LOG         append every invocation here (one line per call)
+  STUB_STFLASH_FAIL_TIMES  the first N invocations fail to enter SWD mode, the
+                           later ones work - the real dongle behaviour:
+                             WARN common.c: NRST is not connected
+                             ERROR Soft reset failed: error write to AIRCR
+                             Failed to enter SWD mode
+  STUB_STFLASH_STATE_FILE  where that counter lives (default: /tmp)
+  STUB_STFLASH_DIE         "write"|"erase": that verb always fails
+  STUB_STFLASH_FLASH_KB    flash size claimed in the banner (default 1024)
+  STUB_STFLASH_SHORT_WRITE 1: report fewer bytes written than the file holds
+  STUB_STFLASH_SLEEP       seconds to sleep per call (default 0)
+"""
+
+import os
+import sys
+
+args = sys.argv[1:]
+flash_kb = int(os.environ.get("STUB_STFLASH_FLASH_KB") or "1024", 0)
+
+log_path = os.environ.get("STUB_STFLASH_LOG")
+if log_path:
+    with open(log_path, "a", encoding="utf-8") as fh:
+        fh.write("st-flash " + " ".join(args) + "\n")
+
+if os.environ.get("STUB_STFLASH_SLEEP"):
+    import time
+
+    time.sleep(float(os.environ["STUB_STFLASH_SLEEP"]))
+
+# --- how many times has this stub been called before? ------------------------
+state_file = (
+    os.environ.get("STUB_STFLASH_STATE_FILE") or "/tmp/stub_stflash_sessions"
+)
+try:
+    with open(state_file, encoding="utf-8") as fh:
+        seen = int(fh.read().strip() or "0")
+except (OSError, ValueError):
+    seen = 0
+with open(state_file, "w", encoding="utf-8") as fh:
+    fh.write(str(seen + 1))
+
+fail_times = int(os.environ.get("STUB_STFLASH_FAIL_TIMES") or "0", 0)
+if seen < fail_times:
+    print("st-flash 1.8.0")
+    print("WARN common.c: NRST is not connected", file=sys.stderr)
+    print("ERROR Soft reset failed: error write to AIRCR", file=sys.stderr)
+    print("Failed to enter SWD mode", file=sys.stderr)
+    raise SystemExit(1)
+
+print("st-flash 1.8.0")
+print(f"STM32H74x_H75x: 128 KiB SRAM, {flash_kb} KiB flash in at least 128 KiB pages.")
+
+verb = ""
+rest = []
+for arg in args:
+    if arg.startswith("--"):
+        if arg.startswith("--flash=") or arg.startswith("--freq="):
+            continue
+        continue
+    if not verb:
+        verb = arg
+    else:
+        rest.append(arg)
+
+if os.environ.get("STUB_STFLASH_DIE") == verb:
+    print(f"ERROR: flash {verb} failed", file=sys.stderr)
+    raise SystemExit(1)
+
+if verb == "erase":
+    print("Mass erasing", file=sys.stderr)
+    print("Flash erased", file=sys.stderr)
+    raise SystemExit(0)
+
+if verb != "write":
+    print(f"unsupported: {' '.join(args)}", file=sys.stderr)
+    raise SystemExit(2)
+
+if len(rest) != 2:  # pragma: no cover
+    print("write needs <file> <addr>", file=sys.stderr)
+    raise SystemExit(2)
+
+path, addr_text = rest
+addr = int(addr_text, 0)
+try:
+    data = open(path, "rb").read()
+except OSError as exc:
+    print(f"ERROR opening file {path}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+size = len(data)
+if os.environ.get("STUB_STFLASH_SHORT_WRITE") == "1":
+    size = max(0, size - 4096)
+
+print(f"Mass erasing", file=sys.stderr)
+print(f"Flash page {addr:#010x} erased", file=sys.stderr)
+print(f"{size}/{len(data)} bytes written", file=sys.stderr)
+
+if size != len(data):
+    raise SystemExit(1)
+
+print("Flash written and verified! jolly good!", file=sys.stderr)
+raise SystemExit(0)
