@@ -14,6 +14,10 @@ without a board:
 Environment:
   STUB_RAM_FAULT     comma separated RAM bases; each such 64 KiB window faults
                      on read/write, like DTCM on the real fixture
+  STUB_RAM_FAULT_ABOVE  address; inside that 64 KiB window everything at or
+                     above it faults, i.e. a work area that answers isolated
+                     writes at its base and fails the loader footprint
+                     ("Failed to write memory at 0x24001874")
   STUB_SWD_FAIL=1    emulate "unable to connect to the target"
   STUB_HALT_FAIL=1   `halt` and `reset halt` never stick (DHCSR stays running)
   STUB_ERASE_FAIL=1  `flash erase_address` times out (watchdog reset)
@@ -22,6 +26,14 @@ Environment:
   STUB_DROP_ON_RAM=1 the link dies on the first RAM write (work-area probe)
   STUB_AP_FAIL=1     core debug registers (0xE0001000-0xE00FFFFF, except
                      DHCSR) refuse reads/writes, like a dying AP
+  STUB_BLANK_VECTORS=1  sector 0 is erased: 0x08000000/0x08000004 read back
+                     0xFFFFFFFF, like a board left mid-flash
+  STUB_FLASH_SIZE_KB device flash size reported by `flash probe 0` (default
+                     2048); the stm32h7x driver splits it over two banks
+  STUB_WRITE_FAIL_ONCE=1  the *first* `flash write_image` of the whole run
+                     fails with "Failed to write memory at 0x<wa>4074", the
+                     later ones work - the real "loader RAM unreachable" log
+  STUB_WRITE_STATE_FILE  where that one-shot flag lives
   STUB_SPEED_MAX     connect only succeeds at adapter speeds <= this kHz
                      (emulates a marginal link that needs a slow clock)
   STUB_LINK_PATTERN  per-session link health, e.g. "101" = every second
@@ -71,7 +83,13 @@ state = {
     "halted": False,
     "work_area": 0x20000000,   # OpenOCD default for stm32h7x.cfg
     "dropped": False,
-    "mem": {},
+    # Initial SP/PC of a programmed board. A board left mid-flash has sector 0
+    # erased, so both read back 0xFFFFFFFF (pc 0xfffffffe / msp 0xfffffffc).
+    "mem": (
+        {0x08000000: 0xFFFFFFFF, 0x08000004: 0xFFFFFFFF}
+        if os.environ.get("STUB_BLANK_VECTORS") == "1"
+        else {0x08000000: 0x24080000, 0x08000004: 0x08000201}
+    ),
     "rc": 0,
     "err": "",
     "erase_done": False,
@@ -90,7 +108,12 @@ def fail(line: str) -> None:
     raise SystemExit(1)
 
 
+fault_above = int(os.environ.get("STUB_RAM_FAULT_ABOVE") or "0", 0)
+
+
 def broken(addr: int) -> bool:
+    if fault_above and fault_above <= addr < fault_above + 0x10000:
+        return True
     return any(base <= addr < base + 0x10000 for base in fault_bases)
 
 
@@ -180,6 +203,24 @@ def do_reset_halt() -> None:
     state["halted"] = True
     emit("Info : [stm32h7x.cpu0] reset halt via SYSRESETREQ + vector catch")
     drop_if_requested("halt")
+
+
+def write_fails_once() -> bool:
+    """True the first time it is asked, False afterwards (per run)."""
+    if os.environ.get("STUB_WRITE_FAIL_ONCE") != "1":
+        return False
+    path = (
+        os.environ.get("STUB_WRITE_STATE_FILE")
+        or (os.environ.get("STUB_STATE_FILE") or "/tmp/stub_openocd_sessions") + ".write"
+    )
+    try:
+        with open(path, encoding="utf-8") as fh:
+            seen = int(fh.read().strip() or "0")
+    except (OSError, ValueError):
+        seen = 0
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(str(seen + 1))
+    return seen == 0
 
 
 def do_statement(stmt: str) -> None:
@@ -277,6 +318,16 @@ def do_statement(stmt: str) -> None:
         emit(f"0x{addr:08x}: {value:08x}")
         return
 
+    if re.search(r"flash probe 0$", stmt):
+        size_kb = int(os.environ.get("STUB_FLASH_SIZE_KB") or "2048", 0)
+        emit("Info : Device: STM32H74x/75x")
+        emit(f"Info : flash size probed value {size_kb}k")
+        emit("Info : STM32H7 flash has dual banks")
+        emit(
+            f"Info : Bank (0) size is {size_kb // 2} kb, base address is 0x08000000"
+        )
+        return
+
     m = re.search(r"flash erase_address (0x[0-9a-fA-F]+) (0x[0-9a-fA-F]+|\d+)$", stmt)
     if m:
         if state["dropped"]:
@@ -303,6 +354,8 @@ def do_statement(stmt: str) -> None:
         for addr in (base, base + 0x2194, base + 0x3994):
             if broken(addr):
                 fail(f"Error: Failed to write memory at 0x{addr:08x}")
+        if write_fails_once():
+            fail(f"Error: Failed to write memory at 0x{base + 0x4074:08x}")
         emit(f"wrote {os.path.getsize(path)} bytes from file {path}")
         state["write_done"] = True
         drop_if_requested("write")
