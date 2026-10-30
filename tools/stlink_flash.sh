@@ -1,7 +1,7 @@
 #!/bin/bash
 # Flash .bin/.hex via ST-LINK for IndiH743 (no NRST).
 #
-# Three fixture quirks are handled here:
+# Four fixture quirks are handled here:
 #
 # 1. Flash-loader RAM. OpenOCD defaults the STM32H7 work area to DTCM
 #    (0x20000000); writes there fault on this fixture ("Failed to write memory
