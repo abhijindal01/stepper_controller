@@ -25,6 +25,17 @@
 #    still boots instead of one with a blank vector table (SP=0xFFFFFFFC ->
 #    lockup, pc=0xFFFFFFFE). Retries after a completed erase never erase again.
 #
+# 4. Backend. OpenOCD can erase and *read* this fixture perfectly but its flash
+#    loader download dies ("Failed to write memory at 0x24001874", STLINK status
+#    0x12/0x18), so writes go through `st-flash --connect-under-reset` when it is
+#    installed, and OpenOCD is kept for the probe and the readback verify:
+#
+#        st-flash 1.8.0  -> 131072/131072 bytes written
+#        Flash written and verified! jolly good!
+#        openocd         -> verified 131072 bytes in 2.1s (58.6 KiB/s)
+#
+#    STLINK_BACKEND=ocd forces the old path, =stflash forces the new one.
+#
 #   tools/stlink_flash.sh <image.bin|image.hex> [base_addr_for_bin]
 #
 # Environment overrides:
@@ -43,6 +54,15 @@
 #   STLINK_PROBE_SIZE       1 = probe the device flash size first (default 1)
 #   STLINK_ALLOW_OVERSIZE   1 = write an image bigger than the probed flash
 #                            (default 0: refuse, see FLASH_WARN in the log)
+#   STLINK_BACKEND          auto|ocd|stflash          (default auto: st-flash
+#                            when installed, OpenOCD otherwise)
+#   STLINK_STFLASH          st-flash binary           (default st-flash)
+#   STLINK_MASS_ERASE       1 = erase the whole flash before writing
+#                            (default 0; the size check runs first, always)
+#   STLINK_VERIFY_OCD       1 = verify the written image with OpenOCD's readback
+#                            (default 1; the author of the write never votes)
+#   STLINK_LOG_DIR          where session logs go     (default /tmp)
+#   STLINK_KEEP_LOGS        1 = keep every session log (default 1)
 #   OPENOCD                 openocd binary            (default openocd)
 #
 # Exit codes: 0 ok, 1 usage/file error (including an image that does not fit
@@ -57,7 +77,7 @@ PY="${ROOT}/../venv/bin/python3"
 [[ -x "$PY" ]] || PY=python3
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,72p' "$0" | sed 's/^# \{0,1\}//'
   [[ $# -lt 1 ]] && exit 1
   exit 0
 fi
@@ -73,6 +93,7 @@ fi
 exec "$PY" - "$IMG" "$BASE" "$CFG" <<'PY'
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -121,6 +142,12 @@ FULL_VERIFY = _flag("STLINK_FULL_VERIFY", True)
 RUN_AFTER = _flag("STLINK_RUN_AFTER", True)
 PROBE_SIZE = _flag("STLINK_PROBE_SIZE", True)
 ALLOW_OVERSIZE = _flag("STLINK_ALLOW_OVERSIZE", False)
+BACKEND = (_env("STLINK_BACKEND", "auto") or "auto").strip().lower()
+STFLASH = _env("STLINK_STFLASH", "st-flash")
+MASS_ERASE = _flag("STLINK_MASS_ERASE", False)
+VERIFY_OCD = _flag("STLINK_VERIFY_OCD", True)
+LOG_DIR = Path(_env("STLINK_LOG_DIR", tempfile.gettempdir()))
+KEEP_LOGS = _flag("STLINK_KEEP_LOGS", True)
 
 # Sectors that were erased but not written back yet. Every failure message
 # repeats this, because "nothing was erased" is only true when it is empty.
@@ -257,6 +284,19 @@ def ap_errors(text: str) -> bool:
 def kind_of(text: str) -> str:
     """Failure kind from a session log."""
     low = text.lower()
+    # The flash controller going away mid-program is not a link problem: the
+    # AP dies exactly when FLASH_CR (0x5200200C) is written, i.e. when the
+    # charge pump starts. Seen on the pad:
+    #     Error: error while writing to address 0x5200200c
+    #     Error: error during the lock of flash
+    #     Error: Error closing APs
+    if (
+        "error during the lock of flash" in low
+        or "address 0x5200200c" in low
+        or "error closing aps" in low
+        or ("flash write algorithm" in low and "ctlr/stat" in low)
+    ):
+        return "brownout"
     if "ctlr/stat" in low or "force reconnect" in low or "init mode failed" in low:
         return "swd"
     if "FLASH_EVENT halt_failed" in text or "target not halted" in low:
@@ -304,6 +344,15 @@ def explain(kind: str) -> str:
             "the flash-loader work area did not hold the probe pattern - "
             "either the write failed (SWD link collapsing under load, target "
             "not halted) or the RAM answered with different data"
+        ),
+        "brownout": (
+            "the target dropped off SWD the moment the flash controller was "
+            "programmed - that is a brownout / reset during programming (pad "
+            "supply, GND return, bulk capacitance), not a tool problem"
+        ),
+        "stflash": (
+            "st-flash could not write the image - SWD entry or the write itself "
+            "failed; check contact, target power and the dongle (USB resets)"
         ),
         "verify": "image read back different from what was written",
         "timeout": "OpenOCD did not finish in time",
@@ -579,6 +628,15 @@ def halt_target(speed: int) -> str:
         "    triage: tools/stlink_soak.sh (count good connects), then re-seat "
         "contact, power-cycle the pad (jog away and back) and retry at "
         "STLINK_SPEED=25\n"
+        + (
+            "    if the OpenOCD session will not halt but st-flash can still "
+            "enter SWD, the\n"
+            "    recovery ladder writes without an OpenOCD halt:\n"
+            f"        tools/stlink_recover.sh {globals().get('img_path', 'image.bin')} "
+            f"{globals().get('flash_base', FLASH_BASE):#x}\n"
+            if stflash_available()
+            else ""
+        )
     )
     raise SystemExit(exit_code)
 
@@ -635,6 +693,219 @@ def probed_flash_size(speed: int) -> int | None:
     for m in re.finditer(r"flash size probed value\s+(\d+)\s*k", text, re.I):
         pass
     return int(m.group(1)) * 1024 if m else None
+
+
+# ------------------------------------------------------------------- session logs
+
+SESSIONS = 0
+
+
+def save_log(name: str, text: str) -> Path | None:
+    """Keep the session log on disk; every failure of this wrapper was once a
+    guessed failure because the log only lived in the terminal."""
+    global SESSIONS
+    if not KEEP_LOGS or not (text or "").strip():
+        return None
+    SESSIONS += 1
+    path = LOG_DIR / f"stlink_flash_{name}.log"
+    try:
+        path.write_text(text)
+    except OSError:
+        return None
+    return path
+
+
+def note_log(name: str, text: str, indent: str = "      ") -> None:
+    path = save_log(name, text)
+    if path:
+        print(f"{indent}full log: {path}", flush=True)
+
+
+# ------------------------------------------------------------------ st-flash backend
+
+def stflash_available() -> bool:
+    return shutil.which(STFLASH) is not None
+
+
+def resolve_backend() -> str:
+    if BACKEND in ("ocd", "openocd"):
+        return "ocd"
+    if BACKEND in ("stflash", "st-flash"):
+        return "stflash"
+    return "stflash" if stflash_available() else "ocd"
+
+
+def run_stflash(args: list[str], timeout: float = 600) -> tuple[int, str]:
+    cmd = [STFLASH] + args
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        return 127, f"{STFLASH}: not found"
+    except subprocess.TimeoutExpired:
+        return 124, "TIMEOUT: st-flash did not finish in time"
+    return proc.returncode, (proc.stdout or "") + (proc.stderr or "")
+
+
+def stflash_erase() -> bool:
+    rc, text = run_stflash(["--connect-under-reset", "erase"], timeout=OCD_TIMEOUT)
+    low = text.lower()
+    ok = rc == 0 and "error" not in low and "fail" not in low
+    print(f"  st-flash mass erase: {'ok' if ok else 'FAILED'}", flush=True)
+    if not ok:
+        for line in text.splitlines():
+            if line.strip():
+                print(f"      {line}", flush=True)
+        note_log("stflash_erase", text, "    ")
+        TOUCHED.append("whole flash (mass erase)")
+    return ok
+
+
+def stflash_write(bin_path: Path, addr: int, size: int) -> tuple[bool, str]:
+    """`st-flash --connect-under-reset write file addr`, retried.
+
+    st-flash erases and programs each 128 KiB page itself and verifies its own
+    write ("Flash written and verified! jolly good!"), so its exit status is
+    still checked against the text, and the result is verified again with
+    OpenOCD's readback afterwards.
+    """
+    last = ""
+    for attempt in range(1, ATTEMPTS + 1):
+        rc, last = run_stflash(
+            ["--connect-under-reset", "write", str(bin_path), f"{addr:#x}"],
+            timeout=OCD_TIMEOUT,
+        )
+        low = last.lower()
+        ok = rc == 0 and (
+            "written and verified" in low
+            or ("bytes written" in low and "verified" in low)
+        )
+        if ok:
+            print(f"  st-flash: {size} bytes written and verified "
+                  f"(attempt {attempt})", flush=True)
+            note_log("stflash_ok", last)
+            return True, last
+        print(f"    st-flash attempt {attempt}/{ATTEMPTS} failed", flush=True)
+        entries = [ln for ln in last.splitlines()
+                   if re.search(r"error|fail|warn", ln, re.I)]
+        for line in entries[:6]:
+            print(f"      {line}", flush=True)
+        note_log(f"stflash_attempt{attempt}", last)
+        if attempt < ATTEMPTS:
+            time.sleep(min(5.0, 1.5 * attempt))
+    return False, last
+
+
+def ocd_verify_image(bin_path: Path, addr: int, speed: int) -> tuple[bool, str]:
+    """Read the flash back with OpenOCD - the writer never gets to vote."""
+    cmds = [
+        f"init; adapter speed {speed}",
+        "catch {reset halt}",
+        f"verify_image {bin_path} {addr:#x}",
+        "exit",
+    ]
+    rc, text = run_openocd_connect(cmds, timeout=min(OCD_TIMEOUT, 300))
+    low = text.lower()
+    ok = rc == 0 and "verified" in low and "error:" not in low
+    return ok, text
+
+
+def stinfo_flash_size() -> int | None:
+    """Device flash size from `st-info --probe` (independent of OpenOCD)."""
+    exe = shutil.which("st-info")
+    if not exe:
+        return None
+    try:
+        proc = subprocess.run([exe, "--probe"], capture_output=True,
+                              text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    text = (proc.stdout or "") + (proc.stderr or "")
+    # st-info prints either `flash: 1024 (pagesize: 131072)` or
+    # `flash: 1024 KiB` depending on the version, so the unit is optional and
+    # the number is always KiB.
+    m = None
+    for m in re.finditer(r"flash:\s*(\d+)\s*(?:KiB|kB|k)?\b", text, re.I):
+        pass
+    if not m:
+        return None
+    kib = int(m.group(1))
+    return kib * 1024 if kib else None
+
+
+def release_target(speed: int) -> None:
+    if not RUN_AFTER:
+        return
+    rc, text = run_openocd_connect(
+        [f"init; adapter speed {speed}", "reset run", 'echo "FLASH_RUN"', "exit"],
+        timeout=min(OCD_TIMEOUT, 120),
+    )
+    if "FLASH_RUN" in text and "Error:" not in text:
+        print("target released with reset run", flush=True)
+    else:
+        print(
+            "warning: `reset run` did not confirm - power-cycle the pad "
+            "(jog away and back) to start the firmware",
+            flush=True,
+        )
+
+
+def flash_with_stflash() -> None:
+    started = time.monotonic()
+    tmpdir = Path(tempfile.mkdtemp(prefix="stlink_flash_"))
+    try:
+        bin_path = tmpdir / "image.bin"
+        bin_path.write_bytes(image)
+
+        if MASS_ERASE:
+            print("mass erase requested - erasing the whole flash first "
+                  "(the size check above already passed)", flush=True)
+            if not stflash_erase():
+                sys.stderr.write(
+                    "FLASH_FAILED erase: st-flash mass erase failed - "
+                    f"{explain('stflash')}\n" + damage_note()
+                )
+                raise SystemExit(3)
+
+        ok, last = stflash_write(bin_path, flash_base, len(image))
+        if not ok:
+            TOUCHED.append(f"pages {flash_base:#x}..{end:#x} (st-flash erased them)")
+            sys.stderr.write(last)
+            sys.stderr.write(
+                f"FLASH_FAILED stflash: st-flash could not write "
+                f"{flash_base:#x}..{end:#x} - {explain('stflash')}\n"
+                + damage_note()
+                + "    triage: re-run the same command (it succeeds on a retry "
+                "when the dongle stays up),\n"
+                "    watch `dmesg -T -w | grep -iE \"usb|stlink\"` for resets\n"
+            )
+            raise SystemExit(3)
+
+        if VERIFY_OCD and shutil.which(OPENOCD):
+            print("verifying with OpenOCD's readback...", flush=True)
+            ok, text = ocd_verify_image(bin_path, flash_base, SPEED)
+            if not ok:
+                sys.stderr.write(text)
+                sys.stderr.write(
+                    "FLASH_FAILED verify: the readback does not match the image "
+                    "- st-flash claimed success; trust this, not it\n"
+                )
+                note_log("verify", text, "    ")
+                raise SystemExit(3)
+            print("Verified OK", flush=True)
+
+        TOUCHED.clear()  # every page that was erased is now written and verified
+        release_target(SPEED)
+
+        elapsed = time.monotonic() - started
+        print(
+            f"FLASH_OK {len(image)} bytes @ {flash_base:#x} backend stflash "
+            f"speed {SPEED} kHz in {elapsed:.1f}s ({SESSIONS} log(s) in {LOG_DIR})",
+            flush=True,
+        )
+    finally:
+        for f in tmpdir.glob("*"):
+            f.unlink(missing_ok=True)
+        tmpdir.rmdir()
 
 
 # ---------------------------------------------------------------------- flashing
@@ -721,6 +992,48 @@ if PROBE_SIZE:
                 )
                 raise SystemExit(1)
 
+# ---------------------------------------------------------------- backend choice
+# OpenOCD erase + readback work on this fixture, its flash *loader download*
+# does not (see quirk 4). st-flash can boot the loader itself, so it writes.
+backend = resolve_backend()
+print(f"backend: {backend}", flush=True)
+
+if backend == "stflash":
+    if not stflash_available():
+        sys.stderr.write(
+            f"FLASH_FAILED stflash: {STFLASH} is not installed - "
+            "`sudo apt-get install -y stlink-tools`, or STLINK_BACKEND=ocd "
+            "to use the OpenOCD write path\n"
+        )
+        raise SystemExit(1)
+
+    # Second opinion on the part size, from a different tool than OpenOCD.
+    # Both must agree before anything is erased.
+    dev_size = stinfo_flash_size()
+    if dev_size:
+        print(f"device flash: st-info reports {dev_size // 1024} KiB", flush=True)
+        if end > FLASH_BASE + dev_size:
+            if not ALLOW_OVERSIZE:
+                sys.stderr.write(
+                    f"FLASH_FAILED size: st-info says {dev_size // 1024} KiB, "
+                    f"the image ends at {end:#x} - nothing was erased\n"
+                )
+                raise SystemExit(1)
+    else:
+        print(
+            "device flash: st-info could not read the size (marginal link) - "
+            "relying on the OpenOCD probe above",
+            flush=True,
+        )
+
+    print(
+        f"flashing {img_path.name}: {len(image)} bytes @ {flash_base:#x} "
+        "in 128 KiB pages via st-flash",
+        flush=True,
+    )
+    flash_with_stflash()
+    raise SystemExit(0)
+
 wa_phys, wa_size, wa_label = pick_work_area(speed)
 
 tmpdir = Path(tempfile.mkdtemp(prefix="stlink_flash_"))
@@ -790,6 +1103,38 @@ try:
             flush=True,
         )
 
+    if MASS_ERASE:
+        print(
+            "mass erase requested - erasing the whole flash before writing "
+            "(the size check above already passed)",
+            flush=True,
+        )
+        cmds = wa_commands(wa_phys, wa_size) + [
+            f"init; adapter speed {speed}",
+            "set _rc [catch {reset halt} _e]",
+            "if {$_rc != 0} {",
+            '    echo "FLASH_EVENT halt_failed $_e"',
+            "} else {",
+            '    echo "FLASH_STAGE erase"',
+            "    stm32h7x mass_erase 0",
+            '    echo "FLASH_STAGE done"',
+            "}",
+            "exit",
+        ]
+        rc, text = run_openocd_connect(cmds, timeout=OCD_TIMEOUT * 2)
+        TOUCHED.append("whole flash (mass erase)")
+        if "mass erase complete" not in text.lower():
+            sys.stderr.write(text)
+            sys.stderr.write(
+                "FLASH_FAILED erase: mass erase did not report completion "
+                f"(openocd exit {rc}) - {explain(kind_of(text))}\n"
+                + damage_note()
+            )
+            note_log("mass_erase", text, "    ")
+            raise SystemExit(4)
+        print("mass erase complete - the board is blank until this flash ends",
+              flush=True)
+
     for n in order:
         piece = pieces[n]
         part = parts[n]
@@ -848,6 +1193,7 @@ try:
             for line in last_text.splitlines():
                 if "Error" in line or "Failed" in line:
                     print(f"      {line}", flush=True)
+            note_log(f"ocd_sector{n}_attempt{attempt}", last_text, "    ")
 
             if attempt == ATTEMPTS:
                 break
@@ -948,19 +1294,8 @@ try:
     else:
         print("Verified OK (per-sector)", flush=True)
 
-    if RUN_AFTER:
-        rc, text = run_openocd_connect(
-            [f"init; adapter speed {speed}", "reset run", 'echo "FLASH_RUN"', "exit"],
-            timeout=min(OCD_TIMEOUT, 120),
-        )
-        if "FLASH_RUN" in text and "Error:" not in text:
-            print("target released with reset run", flush=True)
-        else:
-            print(
-                "warning: `reset run` did not confirm - power-cycle the pad "
-                "(jog away and back) to start the firmware",
-                flush=True,
-            )
+    TOUCHED.clear()  # every sector that was erased is written and verified
+    release_target(speed)
 
     elapsed = time.monotonic() - started
     print(

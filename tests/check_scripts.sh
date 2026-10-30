@@ -456,6 +456,277 @@ run_flash "oversize write can be forced" 0 STUB_FLASH_SIZE_KB=128 \
     STLINK_ALLOW_OVERSIZE=1
 reject_log "forced oversize does not claim FLASH_FAILED" "FLASH_FAILED"
 
+# ----------------------------------------------- st-flash backend (the pad fix)
+# OpenOCD erases and reads this fixture but its flash loader download dies
+# ("Failed to write memory at 0x24001874", STLINK status 0x12/0x18), so
+# tools/stlink_flash.sh writes through `st-flash --connect-under-reset` when it
+# is installed and keeps OpenOCD for the probe and the readback verify.
+#
+#   tests/stubs/stflash/st-flash   fake 1.8.0 writer (own 128 KiB page erase)
+#   tests/stubs/stflash/st-info    fake probe, second opinion on the flash size
+#
+#   STUB_STFLASH_FAIL_TIMES=1   first call fails to enter SWD mode
+#   STUB_STFLASH_DIE=write      writes always fail
+#   STUB_STFLASH_SHORT_WRITE=1  claims fewer bytes written than the file holds
+#   STUB_STINFO_FLASH_KB=128    st-info disagrees with the OpenOCD probe
+#   STUB_VERIFY_FAIL=1          the readback does not match
+printf '\nFlash wrapper (st-flash backend)\n'
+
+SFLASH_PATH="$HERE/stubs/stflash:$HERE/stubs"
+SFLASH_LOG="$TMP_FLASH/stflash.log"
+
+run_sflash() {  # run_sflash <label> [expected-rc] [env assignments...]
+    local label="$1" want="${2:-0}"
+    if [ "$#" -ge 2 ]; then shift 2; else shift 1; fi
+    local out rc
+    rm -f "$OCD_LOG" "$SFLASH_LOG"
+    out="$(env PATH="$SFLASH_PATH:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
+        STUB_STFLASH_LOG="$SFLASH_LOG" "$@" \
+        bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_HEX" 2>&1)"
+    rc=$?
+    printf '%s' "$out" > "$TMP_FLASH/last.log"
+    if [ "$rc" = "$want" ]; then
+        pass "$label (exit $rc)"
+    else
+        fail "$label (exit $rc, wanted $want)"
+        printf '%s\n' "$out" | tail -20
+    fi
+}
+
+run_flash_with_image() {  # run_flash_with_image <label> <want> <image> [env...]
+    local label="$1" want="$2" img="$3"
+    shift 3
+    local out rc
+    rm -f "$OCD_LOG" "$SFLASH_LOG"
+    out="$(env PATH="$SFLASH_PATH:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
+        STUB_STFLASH_LOG="$SFLASH_LOG" "$@" \
+        bash "$ROOT/tools/stlink_flash.sh" "$img" 2>&1)"
+    rc=$?
+    printf '%s' "$out" > "$TMP_FLASH/last.log"
+    if [ "$rc" = "$want" ]; then
+        pass "$label (exit $rc)"
+    else
+        fail "$label (exit $rc, wanted $want)"
+        printf '%s\n' "$out" | tail -20
+    fi
+}
+
+run_sflash "st-flash is used when installed"
+expect_log "backend is announced" "backend: stflash"
+expect_log "st-info confirms the part size" "st-info reports 1024 KiB"
+expect_log "the write goes through st-flash" "bytes written and verified"
+expect_log "OpenOCD still verifies the readback" "Verified OK"
+expect_log "FLASH_OK names the backend" "backend stflash"
+reject_log "no OpenOCD flash write_image" "flash write_image"
+if grep -q "st-flash --connect-under-reset write" "$SFLASH_LOG" 2>/dev/null; then
+    pass "the image really went to st-flash"
+else
+    fail "the image really went to st-flash"
+fi
+if grep -q "verify_image" "$OCD_LOG" 2>/dev/null; then
+    pass "the writer does not vote: OpenOCD verified the image"
+else
+    fail "the writer does not vote: OpenOCD verified the image"
+fi
+
+# The dongle on the pad fails the first `--connect-under-reset` and succeeds on
+# a retry (15:54:31 was the second attempt); a transient must not fail a flash.
+rm -f "$TMP_FLASH/state"
+run_sflash "a failed SWD entry is retried" 0 STUB_STFLASH_STATE_FILE="$TMP_FLASH/state" \
+    STUB_STFLASH_FAIL_TIMES=1
+expect_log "the first attempt is reported" "st-flash attempt 1/3 failed"
+expect_log "the retry succeeds" "attempt 2"
+
+run_sflash "st-flash that never enters SWD fails the flash" 3 \
+    STUB_STFLASH_STATE_FILE="$TMP_FLASH/state" STUB_STFLASH_FAIL_TIMES=99
+expect_log "the failure is classified" "FLASH_FAILED stflash"
+expect_log "the dongle log is shown" "Failed to enter SWD mode"
+if grep -q "stflash_attempt1.log" "$TMP_FLASH/last.log"; then
+    pass "the failing session log is kept"
+else
+    fail "the failing session log is kept"
+fi
+
+run_sflash "a short write is not trusted" 3 STUB_STFLASH_SHORT_WRITE=1
+expect_log "short write is a failure" "FLASH_FAILED"
+
+# st-flash verifies its own write - and so does OpenOCD. When they disagree the
+# readback wins.
+run_sflash "readback mismatch fails the flash" 3 STUB_VERIFY_FAIL=1
+expect_log "verify failure is classified" "FLASH_FAILED verify"
+reject_log "a lying writer never prints FLASH_OK" "FLASH_OK"
+
+# ------------------------------------------------------ mass erase (opt-in)
+run_sflash "mass erase erases before writing" 0 STLINK_MASS_ERASE=1
+expect_log "mass erase is announced" "mass erase requested"
+expect_log "mass erase result is reported" "st-flash mass erase: ok"
+ERASE_LINE="$(grep -n "erase" "$SFLASH_LOG" 2>/dev/null | head -1 | cut -d: -f1)"
+WRITE_LINE="$(grep -n "write" "$SFLASH_LOG" 2>/dev/null | head -1 | cut -d: -f1)"
+if [ -n "$ERASE_LINE" ] && [ -n "$WRITE_LINE" ] && [ "$ERASE_LINE" -lt "$WRITE_LINE" ]; then
+    pass "erase happens before the write"
+else
+    fail "erase happens before the write"
+fi
+
+run_sflash "a failed mass erase writes nothing" 3 STLINK_MASS_ERASE=1 \
+    STUB_STFLASH_DIE=erase
+expect_log "erase failure is classified" "FLASH_FAILED erase"
+if grep -q "write" "$SFLASH_LOG" 2>/dev/null; then
+    fail "a failed mass erase writes nothing (a write followed)"
+else
+    pass "a failed mass erase writes nothing"
+fi
+
+# The size guard runs *before* any erase - the whole point of the guard. This is
+# the sequence that once left the pad blank: mass erase, then a write that could
+# not fit.
+run_flash_with_image "mass erase refuses an image that does not fit" 1 \
+    "$TMP_FLASH/two_sectors.bin" STLINK_MASS_ERASE=1 STUB_FLASH_SIZE_KB=128
+expect_log "oversize refusal still happens first" "nothing was erased"
+reject_log "nothing is mass erased" "mass erase"
+if grep -q "erase" "$SFLASH_LOG" 2>/dev/null; then
+    fail "nothing is mass erased (st-flash erase was called)"
+else
+    pass "nothing is mass erased"
+fi
+
+# The same knob on the OpenOCD path: `stm32h7x mass_erase 0` after a halt.
+run_sflash "OpenOCD mass erase works too" 0 STLINK_BACKEND=ocd STLINK_MASS_ERASE=1
+expect_log "OpenOCD mass erase is announced" "the board is blank until this flash ends"
+expect_log "OpenOCD mass erase completes" "mass erase complete"
+if grep -q "mass_erase" "$OCD_LOG" 2>/dev/null; then
+    pass "mass_erase really reached OpenOCD"
+else
+    fail "mass_erase really reached OpenOCD"
+fi
+
+run_sflash "an OpenOCD mass erase that fails writes nothing" 4 STLINK_BACKEND=ocd \
+    STLINK_MASS_ERASE=1 STUB_MASS_ERASE_FAIL=1
+expect_log "failed mass erase is classified" "FLASH_FAILED erase"
+reject_log "failed mass erase writes nothing" "flash write_image"
+expect_log "the erased state is disclosed" "whole flash (mass erase)"
+
+run_flash_with_image "st-info disagreement refuses the write" 1 \
+    "$TMP_FLASH/two_sectors.bin" STUB_STINFO_FLASH_KB=128 STLINK_ALLOW_OVERSIZE=0
+expect_log "st-info size is quoted" "st-info says 128 KiB"
+reject_log "st-info refusal erases nothing" "erased address"
+reject_log "st-info refusal writes nothing" "bytes written and verified"
+
+# --------------------------------------------------------------- backend choice
+run_sflash "STLINK_BACKEND=ocd keeps the OpenOCD path" 0 STLINK_BACKEND=ocd
+expect_log "backend override is announced" "backend: ocd"
+if grep -q "flash write_image" "$OCD_LOG" 2>/dev/null; then
+    pass "OCD backend writes with OpenOCD"
+else
+    fail "OCD backend writes with OpenOCD"
+fi
+
+# No st-flash on PATH and no explicit backend: fall back, do not fail.
+OUT="$(env PATH="$HERE/stubs:$PATH" STLINK_BACKEND=stflash \
+    bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_HEX" 2>&1)"
+RC=$?
+printf '%s' "$OUT" > "$TMP_FLASH/last.log"
+if [ "$RC" = "1" ]; then
+    pass "missing st-flash is a usage error when forced (exit 1)"
+else
+    fail "missing st-flash is a usage error when forced (exit $RC, wanted 1)"
+fi
+expect_log "the fix is spelled out" "stlink-tools"
+
+# Per-session logs land in STLINK_LOG_DIR, named and readable.
+mkdir -p "$TMP_FLASH/logs"
+run_sflash "session logs are written" 0 STLINK_LOG_DIR="$TMP_FLASH/logs"
+if [ -n "$(ls -A "$TMP_FLASH/logs" 2>/dev/null)" ]; then
+    pass "session logs are written"
+else
+    fail "session logs are written"
+fi
+
+# ---------------------------------------------------------- recovery ladder
+# tools/stlink_recover.sh writes with st-flash, falls back to CubeProgrammer and
+# then to OpenOCD, and always judges the result by OpenOCD's readback.
+printf '\nRecovery script (stubbed openocd + st-flash)\n'
+
+if bash "$ROOT/tools/stlink_recover.sh" --help >/dev/null 2>&1; then
+    pass "stlink_recover.sh --help"
+else
+    fail "stlink_recover.sh --help"
+fi
+
+run_recover() {  # run_recover <label> <expected-rc> [env assignments...]
+    local label="$1" want="$2"
+    shift 2
+    local out rc
+    out="$(env PATH="$SFLASH_PATH:$PATH" "$@" \
+        bash "$ROOT/tools/stlink_recover.sh" "$IMAGE_BIN" 0x08000000 2>&1)"
+    rc=$?
+    printf '%s' "$out" > "$TMP_FLASH/last.log"
+    if [ "$rc" = "$want" ]; then
+        pass "$label (exit $rc)"
+    else
+        fail "$label (exit $rc, wanted $want)"
+        printf '%s\n' "$out" | tail -20
+    fi
+}
+
+run_recover "recovery writes with st-flash and verifies" 0
+if grep -q "st-flash --connect-under-reset write" "$TMP_FLASH/last.log"; then
+    pass "recovery prefers st-flash"
+else
+    fail "recovery prefers st-flash"
+fi
+if grep -q "RECOVER_OK" "$TMP_FLASH/last.log"; then
+    pass "recovery reports RECOVER_OK"
+else
+    fail "recovery reports RECOVER_OK"
+fi
+reject_log "recovery never mass erases" "mass_erase"
+reject_log "recovery never mass erases (st-flash)" "st-flash --connect-under-reset erase"
+
+# st-flash failing every time falls through to the vendor tool (absent here) and
+# then to OpenOCD, which dies in the loader on this fixture.
+run_recover "recovery falls through to OpenOCD" 3 \
+    STUB_STFLASH_DIE=write STUB_PROGRAM_FAIL=1 STLINK_RECOVER_TRIES=1
+expect_log "fallback is announced" "LAST RESORT"
+expect_log "every writer failed" "RECOVER_FAILED"
+
+# A writer that claims success and a readback that disagrees is the one case
+# that must never print OK.
+run_recover "recovery trusts the readback, not the writer" 4 STUB_VERIFY_FAIL=1
+expect_log "readback mismatch is named" "RECOVER_FAILED verify"
+
+# No halt and no st-flash: refuse rather than write on a dead link.
+OUT="$(env PATH="$HERE/stubs:$PATH" STUB_HALT_FAIL=1 STLINK_STFLASH=/nonexistent \
+    bash "$ROOT/tools/stlink_recover.sh" "$IMAGE_BIN" 2>&1)"
+RC=$?
+printf '%s' "$OUT" > "$TMP_FLASH/last.log"
+if [ "$RC" = "5" ]; then
+    pass "no halt and no writer stops the recovery (exit 5)"
+else
+    fail "no halt and no writer stops the recovery (exit $RC, wanted 5)"
+fi
+expect_log "no-halt advice names the pogos" "jog forward"
+reject_log "no write happens without a halt" "connect-under-reset write"
+
+OUT="$(env PATH="$SFLASH_PATH:$PATH" STUB_HALT_FAIL=1 \
+    bash "$ROOT/tools/stlink_recover.sh" "$IMAGE_BIN" 2>&1)"
+printf '%s' "$OUT" > "$TMP_FLASH/last.log"
+if printf '%s' "$OUT" | grep -q "st-flash --connect-under-reset write"; then
+    pass "a marginal link still tries st-flash (it resets itself)"
+else
+    fail "a marginal link still tries st-flash (it resets itself)"
+fi
+
+# --dry-run touches nothing at all.
+OUT="$(env PATH="$SFLASH_PATH:$PATH" \
+    bash "$ROOT/tools/stlink_recover.sh" --dry-run "$IMAGE_BIN" 2>&1)"
+RC=$?
+if [ "$RC" = "0" ] && printf '%s' "$OUT" | grep -q "\[dry-run\]"; then
+    pass "recovery --dry-run plans without writing"
+else
+    fail "recovery --dry-run plans without writing (exit $RC)"
+fi
+
 rm -rf "$TMP_FLASH"
 
 # ---------------------------------------------------------------- summary

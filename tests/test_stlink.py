@@ -225,6 +225,47 @@ class ClassifierTest(unittest.TestCase):
         self.assertEqual(r["code"], 5)
         self.assertIn("FLASH_SIZE_KB", r["hint"])
 
+    def test_brownout_is_named(self):
+        text = STLINK_BANNER + (
+            "Error: error while writing to address 0x5200200c\n"
+            "Error: error during the lock of flash\n"
+            "Error: Error closing APs\n"
+            "FLASH_FAILED brownout: sector 1 @ 0x08020000\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "brownout")
+        self.assertEqual(r["code"], 4)
+        self.assertFalse(r["ok"])
+        self.assertIn("brownout", r["hint"].lower())
+        self.assertIn("0x5200200C", r["hint"])
+
+    def test_brownout_is_retryable(self):
+        self.assertIn("brownout", stlink.TRANSIENT_STATES)
+
+    def test_stflash_failure_is_named(self):
+        text = STLINK_BANNER + (
+            "WARN common.c: NRST is not connected\n"
+            "ERROR Soft reset failed: error write to AIRCR\n"
+            "Failed to enter SWD mode\n"
+            "FLASH_FAILED stflash: st-flash could not write 0x8000000..0x8200000\n"
+        )
+        r = self.classify(text)
+        self.assertEqual(r["state"], "flash_fail")
+        self.assertEqual(r["code"], 4)
+        self.assertIn("st-flash", r["hint"])
+
+    def test_stflash_success_is_ok(self):
+        text = STLINK_BANNER + (
+            "backend: stflash\n"
+            "  st-flash: 131072 bytes written and verified (attempt 2)\n"
+            "Verified OK\n"
+            "FLASH_OK 131072 bytes @ 0x8000000 backend stflash speed 50 kHz in 4.2s\n"
+        )
+        r = self.classify(text, rc=0)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["state"], "ok")
+        self.assertTrue(r["verified"])
+
     def test_swd_connect_failure(self):
         r = self.classify("Error: init mode failed (unable to connect to the target)\n")
         self.assertEqual(r["state"], "swd_fail")

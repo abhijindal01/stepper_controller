@@ -18,3 +18,8 @@ venv/
 # Design preview mockups
 docs/mockups/
 Unselected files/
+
+# Built pad images (large, build-specific) - see firmware/indi_h743/README.md
+firmware/indi_h743/*.bin
+firmware/indi_h743/*.hex
+firmware/indi_h743/*.elf

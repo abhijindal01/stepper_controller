@@ -39,6 +39,11 @@ Environment:
   STUB_LINK_PATTERN  per-session link health, e.g. "101" = every second
                      session fails at init (counter kept in STUB_STATE_FILE)
   STUB_STATE_FILE    where that session counter lives (default /tmp file)
+  STUB_VERIFY_FAIL=1 `verify_image` reports a mismatch (the flash read back
+                     something else), like a write that lied about succeeding
+  STUB_PROGRAM_FAIL=1  `program <file> <addr> verify` fails during the loader
+                     download, like this fixture really does
+  STUB_MASS_ERASE_FAIL=1  `stm32h7x mass_erase 0` never reports completion
   STUB_OPENOCD_LOG   append each simulated session to this file
 """
 
@@ -268,8 +273,10 @@ def do_statement(stmt: str) -> None:
     if stmt == "init":
         show_banner()
         return
-    if stmt == "exit":
-        return
+    if stmt.startswith("exit"):
+        # `exit` and `exit 1` (the wrapper's "no halt" bail-out)
+        parts = stmt.split()
+        raise SystemExit(int(parts[1], 0) if len(parts) > 1 else 0)
     m = re.search(r"adapter speed (\d+)", stmt)
     if m:
         speed = int(m.group(1))
@@ -361,9 +368,36 @@ def do_statement(stmt: str) -> None:
         drop_if_requested("write")
         return
 
+    if re.search(r"stm32h7x mass_erase", stmt):
+        if os.environ.get("STUB_MASS_ERASE_FAIL") == "1":
+            fail("Error: Mass erase failed")
+        emit("Info : stm32h7x mass erase complete")
+        state["mem"] = {0x08000000: 0xFFFFFFFF, 0x08000004: 0xFFFFFFFF}
+        return
+
+    m = re.search(r"program (\S+) (0x[0-9a-fA-F]+)( verify)?$", stmt)
+    if m:
+        path = m.group(1)
+        if state["dropped"] or os.environ.get("STUB_PROGRAM_FAIL") == "1":
+            fail(f"Error: Failed to write memory at 0x24001874")
+        if not os.path.isfile(path):
+            fail(f"Error: could not open {path}")
+        emit("** Programming Started **")
+        emit(f"wrote {os.path.getsize(path)} bytes from file {path}")
+        emit("** Programming Finished **")
+        emit("** Verified OK **")
+        return
+
     m = re.search(r"verify_image (\S+) (0x[0-9a-fA-F]+)$", stmt)
     if m:
         path = m.group(1)
+        if os.environ.get("STUB_VERIFY_FAIL") == "1":
+            emit("Error: checksum mismatch - attempting binary comparison", sys.stderr)
+            emit(
+                "Error: File " + path + " is not the same as flash at " + m.group(2),
+                sys.stderr,
+            )
+            raise SystemExit(1)
         if state["dropped"]:
             fail("Error: Failed to read memory and, additionally, failed to find out where")
         if not os.path.isfile(path):
