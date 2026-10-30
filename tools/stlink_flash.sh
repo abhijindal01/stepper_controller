@@ -36,6 +36,16 @@
 #
 #    STLINK_BACKEND=ocd forces the old path, =stflash forces the new one.
 #
+#    Later on the same fixture st-flash (1.8.0 *and* 1.9.0 develop) failed
+#    too: it erased sector 0, then every write died with "Flash programming
+#    error: 0x00040000" and left the sector blank. What did work is
+#    tools/h7_direct/h7_robust_write.py: it drives the flash controller
+#    registers itself, one 32-byte flash word at a time, reads every word back
+#    by majority before moving on, never programs a word twice, and writes the
+#    vector table last. It only knows sector 0 (128 KiB @ 0x08000000), so
+#    `auto` picks it for an image that fits there - a bootloader - and keeps
+#    st-flash/OpenOCD for anything larger. STLINK_BACKEND=direct forces it.
+#
 # 5. Verdicts are measurements, not exit codes. `st-flash` reports "131072/131072
 #    bytes written" and then exits non-zero, OpenOCD reports a readback it could
 #    not perform - so the flash is read back and *compared* before anything is
@@ -67,8 +77,10 @@
 #   STLINK_PROBE_SIZE       1 = probe the device flash size first (default 1)
 #   STLINK_ALLOW_OVERSIZE   1 = write an image bigger than the probed flash
 #                            (default 0: refuse, see FLASH_WARN in the log)
-#   STLINK_BACKEND          auto|ocd|stflash          (default auto: st-flash
-#                            when installed, OpenOCD otherwise)
+#   STLINK_BACKEND          auto|direct|ocd|stflash   (default auto: direct for
+#                            an image inside sector 0, else st-flash when
+#                            installed, else OpenOCD)
+#   STLINK_DIRECT_WRITER    word-by-word writer (default h7_direct/h7_robust_write.py)
 #   STLINK_STFLASH          st-flash binary           (default st-flash)
 #   STLINK_MASS_ERASE       1 = erase the whole flash before writing
 #                            (default 0; the size check runs first, always)
@@ -104,7 +116,7 @@ PY="${ROOT}/../venv/bin/python3"
 [[ -x "$PY" ]] || PY=python3
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '2,99p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,111p' "$0" | sed 's/^# \{0,1\}//'
   [[ $# -lt 1 ]] && exit 1
   exit 0
 fi
@@ -171,6 +183,8 @@ PROBE_SIZE = _flag("STLINK_PROBE_SIZE", True)
 ALLOW_OVERSIZE = _flag("STLINK_ALLOW_OVERSIZE", False)
 BACKEND = (_env("STLINK_BACKEND", "auto") or "auto").strip().lower()
 STFLASH = _env("STLINK_STFLASH", "st-flash")
+DIRECT_WRITER = Path(_env("STLINK_DIRECT_WRITER",
+                          str(Path(cfg).parent / "h7_direct" / "h7_robust_write.py")))
 MASS_ERASE = _flag("STLINK_MASS_ERASE", False)
 VERIFY_OCD = _flag("STLINK_VERIFY_OCD", True)
 LOG_DIR = Path(_env("STLINK_LOG_DIR", tempfile.gettempdir()))
@@ -397,6 +411,11 @@ def explain(kind: str) -> str:
             "unknown - this is a link failure, not a mismatch, and on a blank "
             "H7 it is usually erratum 3092511 (bogus halt). Power-cycle the pad "
             "and retry with STLINK_BACKEND=stflash"
+        ),
+        "direct": (
+            "the word-by-word writer stopped - the SWD link would not give "
+            "consistent reads, or words hold data that is neither blank nor "
+            "the image; see its last lines above"
         ),
         "verify": "image read back different from what was written",
         "timeout": "OpenOCD did not finish in time",
@@ -1046,11 +1065,19 @@ def stflash_available() -> bool:
     return shutil.which(STFLASH) is not None
 
 
+def fits_sector0() -> bool:
+    return flash_base == FLASH_BASE and end <= FLASH_BASE + SECTOR
+
+
 def resolve_backend() -> str:
     if BACKEND in ("ocd", "openocd"):
         return "ocd"
     if BACKEND in ("stflash", "st-flash"):
         return "stflash"
+    if BACKEND == "direct":
+        return "direct"
+    if fits_sector0() and DIRECT_WRITER.is_file():
+        return "direct"
     return "stflash" if stflash_available() else "ocd"
 
 
@@ -1318,6 +1345,113 @@ def flash_with_stflash() -> None:
         tmpdir.rmdir()
 
 
+# -------------------------------------------------------------- direct backend
+
+def run_direct(bin_path: Path, erase: bool) -> tuple[int, str]:
+    cmd = [sys.executable, "-I", str(DIRECT_WRITER), cfg, str(bin_path),
+           f"{flash_base:#x}"] + (["--erase"] if erase else [])
+    lines = []
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True)
+    except OSError as exc:
+        return 127, f"{DIRECT_WRITER}: {exc}"
+    for line in proc.stdout:          # minutes per run - show progress live
+        print(f"    {line.rstrip()}", flush=True)
+        lines.append(line)
+    return proc.wait(), "".join(lines)
+
+
+def flash_with_direct() -> None:
+    """Sector 0 through h7_direct/h7_robust_write.py (see quirk 4).
+
+    The writer resumes: words that already hold the image are skipped, blank
+    ones are written. Only when it finds foreign data does it ask for an
+    erase, and then it is re-run once with --erase.
+    """
+    started = time.monotonic()
+    tmpdir = Path(tempfile.mkdtemp(prefix="stlink_flash_"))
+    try:
+        bin_path = tmpdir / "image.bin"
+        bin_path.write_bytes(image)
+
+        erase = MASS_ERASE
+        if erase:
+            print("mass erase requested - the direct writer erases sector 0 "
+                  "only, the rest of the flash is left alone", flush=True)
+        rc, text = run_direct(bin_path, erase)
+        if rc != 0 and not erase and "--erase" in text:
+            print("  sector 0 holds other data - erasing it and writing again",
+                  flush=True)
+            erase = True
+            rc, text = run_direct(bin_path, erase)
+        note_log("direct", text)
+        if rc != 0 or "ROBUST_WRITE_DONE" not in text:
+            if erase:
+                TOUCHED.append("sector 0 @ 0x08000000 (erased by the direct writer)")
+            sys.stderr.write(
+                f"FLASH_FAILED direct: {explain('direct')}\n" + damage_note()
+                + "    re-run the same command - the writer resumes where it "
+                "stopped and never\n"
+                "    programs a word twice\n"
+            )
+            raise SystemExit(3)
+        print(f"  direct: {len(image)} bytes written, every word read back",
+              flush=True)
+
+        # Same verdict as every other backend: what the flash holds.
+        state, details = verify_readback(flash_base, image, SPEED)
+        if state == "unreadable":
+            # Not a mismatch: the bulk read could not run. The writer already
+            # read every word back by majority, which is the stronger check.
+            note_log("readback_failed", details.get("text", ""), "    ")
+            print("    bulk readback could not run (link) - relying on the "
+                  "writer's word-by-word majority readback", flush=True)
+        elif state == "partial":
+            # The writer has already read every word by majority, so a single
+            # bulk read cannot overrule it: this dongle drops and shifts words
+            # in bulk reads. Only a mismatch that reads back the same way twice
+            # is a real one.
+            a, _ = read_flash(flash_base, len(image), SPEED)
+            b, _ = read_flash(flash_base, len(image), SPEED) if a is not None else (None, "")
+            if a is not None and a == image:
+                print("Verified OK (on a second bulk read)", flush=True)
+            elif a is None or b is None or a != b:
+                print(
+                    "    bulk readbacks disagree with each other - the link corrupts "
+                    "bulk reads, so\n"
+                    "    it cannot judge the flash; relying on the writer's "
+                    "word-by-word majority readback",
+                    flush=True,
+                )
+            else:
+                matching = sum(1 for x, y in zip(a, image) if x == y)
+                diff = next(k for k, (x, y) in enumerate(zip(a, image)) if x != y)
+                sys.stderr.write(
+                    "FLASH_FAILED verify: two bulk readbacks agree and do not match "
+                    f"the image - the flash holds {matching} of {len(image)} bytes, "
+                    f"first difference at {flash_base + diff:#x}\n"
+                    + damage_note()
+                )
+                raise SystemExit(3)
+        else:
+            print("Verified OK", flush=True)
+
+        TOUCHED.clear()
+        release_target(SPEED)
+
+        elapsed = time.monotonic() - started
+        print(
+            f"FLASH_OK {len(image)} bytes @ {flash_base:#x} backend direct "
+            f"in {elapsed:.1f}s ({SESSIONS} log(s) in {LOG_DIR})",
+            flush=True,
+        )
+    finally:
+        for f in tmpdir.glob("*"):
+            f.unlink(missing_ok=True)
+        tmpdir.rmdir()
+
+
 # ---------------------------------------------------------------------- flashing
 
 n_chunks = (len(image) + SECTOR - 1) // SECTOR
@@ -1404,15 +1538,40 @@ if PROBE_SIZE:
 
 # ---------------------------------------------------------------- backend choice
 # OpenOCD erase + readback work on this fixture, its flash *loader download*
-# does not (see quirk 4). st-flash can boot the loader itself, so it writes.
+# does not, and neither does st-flash's (see quirk 4). The direct writer does,
+# but only for sector 0.
 backend = resolve_backend()
 print(f"backend: {backend}", flush=True)
+
+# The direct writer runs no code on the target and proves the link one word at
+# a time (majority reads before every write, erase only on confirmed foreign
+# data), so neither gate below applies to it - and the bulk readback both use
+# is exactly what this dongle drops words on.
+if backend == "direct":
+    if not fits_sector0():
+        sys.stderr.write(
+            f"FLASH_FAILED direct: the image spans {flash_base:#x}..{end:#x}, the "
+            "direct writer only knows sector 0 (0x08000000..0x08020000) - "
+            "nothing was erased\n"
+        )
+        raise SystemExit(1)
+    if not DIRECT_WRITER.is_file():
+        sys.stderr.write(f"FLASH_FAILED direct: {DIRECT_WRITER} is missing\n")
+        raise SystemExit(1)
+    print(
+        f"flashing {img_path.name}: {len(image)} bytes @ {flash_base:#x} "
+        "word by word via the direct writer (vector table last)",
+        flush=True,
+    )
+    flash_with_direct()
+    raise SystemExit(0)
 
 # Nothing below this line may erase without a link that has proven it can carry
 # bytes both ways: two identical readbacks, and a RAM region that holds a 4 KiB
 # random block (both loaders run from RAM).
 link_preflight(speed)
 ram_integrity_report(speed, WA_SIZE)
+
 
 if backend == "stflash":
     if not stflash_available():

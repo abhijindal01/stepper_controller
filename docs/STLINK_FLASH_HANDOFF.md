@@ -2,7 +2,7 @@
 
 **Host:** `assurance` (RPi 4B) · Flask on `:5000` · ST-LINK/V2 `0483:3748` FW **V2J46S7** (clone)  
 **OpenOCD:** `/usr/bin/openocd` `0.12.0+rpt…` — probe, erase and readback only  
-**st-flash:** `stlink-tools` 1.8.0 — **the write path** (see *Backend*)  
+**Write path:** `tools/h7_direct/h7_robust_write.py` for sector 0 (see *Backend*); `st-flash` 1.8.0 / 1.9.0 **fails here**  
 **No NRST** on pogo harness — only SWCLK, SWDIO, GND (+ VTarget sense).  
 **Part:** STM32H743**xG**, **1 MiB** flash (confirmed by `st-flash` *and* OpenOCD), 128 KiB pages.
 
@@ -87,9 +87,39 @@ so the wrapper resolves a backend automatically:
 
 | `STLINK_BACKEND` | Behaviour |
 |------------------|-----------|
-| `auto` (default) | `st-flash` when it is installed, OpenOCD otherwise |
+| `auto` (default) | `direct` for an image inside sector 0, else `st-flash` when it is installed, else OpenOCD |
+| `direct` | force the word-by-word writer (exit 1 for an image past sector 0) |
 | `stflash` | force `st-flash` (fails with exit 1 and an install hint if missing) |
 | `ocd` | force the old OpenOCD per-sector path |
+
+#### Update 2026-10-30: `st-flash` does not write this board either
+
+The success above did not repeat. On 2026-10-30 `st-flash` 1.8.0 *and* a
+1.9.0-27 build from `develop` both erased sector 0 and then failed every write:
+
+```text
+Flash programming error: 0x00040000
+```
+
+leaving the sector blank (vector table included). What worked was
+`tools/h7_direct/h7_robust_write.py`: it unlocks FLASH_CR1 itself and writes
+one 32-byte flash word per `write_memory` over plain OpenOCD memory access (no
+flash loader), and
+
+- writes a word only after majority reads (3 of 4) say it is blank - an H7
+  flash word must never be programmed twice (it corrupts ECC);
+- never rewrites a word it cannot read; it aborts and says so instead;
+- writes the vector table **last**, so an interrupted run leaves a board that
+  will not boot but still answers SWD;
+- resumes: re-running it skips words that already hold the image;
+- erases sector 0 only with `--erase` (the wrapper adds that once, by itself,
+  when the writer reports foreign data).
+
+All 581 words of the bootloader went in that way (about 18.6 KB). It only
+knows sector 0, so the ArduCopter application (which needs a 1 MiB build
+anyway) still has no working write path on this fixture. The rest of
+`tools/h7_direct/` holds the checks used along the way: `readback.py`,
+`spotcheck.py`, `h7_one_word.sh` and `h7_ecc_check.sh`.
 
 The writer never gets to vote on its own work: after `st-flash` reports success
 the wrapper reads the flash back with OpenOCD `verify_image` and only then
@@ -125,8 +155,9 @@ Knobs (environment):
 | `STLINK_FLASH_PRECHECK_N` / `_MIN` | `3` / `66` | Sessions and pass rate the pre-check needs |
 | `STLINK_FLASH_RETRIES` | `2` | Retries of a *transient* link failure (`swd_lost`, `ap_fail`, `halt_fail`) |
 | `STLINK_FLASH_RETRY_DELAY` | `2` | Seconds between those retries (multiplied by attempt) |
-| `STLINK_BACKEND` | `auto` | `auto` / `stflash` / `ocd` writer (see *Backend*) |
+| `STLINK_BACKEND` | `auto` | `auto` / `direct` / `stflash` / `ocd` writer (see *Backend*) |
 | `STLINK_STFLASH` | `st-flash` | `st-flash` binary used by the wrapper |
+| `STLINK_DIRECT_WRITER` | `tools/h7_direct/h7_robust_write.py` | word-by-word sector-0 writer used by the `direct` backend |
 | `STLINK_MASS_ERASE` | `0` | Erase the whole flash first (see *Mass erase* - the size check still runs first) |
 | `STLINK_VERIFY_OCD` | `1` | Verify the written image with OpenOCD's readback |
 | `STLINK_LOG_DIR` | `/tmp` | Where per-session logs (`stlink_flash_*.log`) are kept |
