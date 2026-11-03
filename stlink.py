@@ -462,7 +462,7 @@ def probe(timeout: float = 20) -> dict:
     return result
 
 
-FLASH_TIMEOUT = float(os.environ.get("STLINK_FLASH_TIMEOUT") or 1800)
+FLASH_TIMEOUT = float(os.environ.get("STLINK_FLASH_TIMEOUT") or 3600)
 #: Link states that are worth retrying - they are transient on this fixture,
 #: and the same command often succeeds a couple of seconds later.
 TRANSIENT_STATES = (

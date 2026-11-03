@@ -20,8 +20,8 @@ Rules this enforces (each one learnt on the fixture):
 Speed: words are read back twice in the same session that wrote them; two
 reads that both equal the image are taken as done (a corrupted read does not
 turn into exactly the expected 32 bytes). Anything else goes back through the
-majority read. STLINK_DIRECT_SPEED (kHz, default 200) and STLINK_DIRECT_BATCH
-(flash words per session, default 256) tune it.
+majority read. STLINK_DIRECT_SPEED (kHz, default 1800) and STLINK_DIRECT_BATCH
+(flash words per session, default 4096) tune it.
 
 The part may report 1 MiB in FLASHSIZE while the die has 2 MiB (the wrapper
 checks the flash physically answers); the second bank's sectors are driven
@@ -31,8 +31,8 @@ import collections, os, re, struct, subprocess, sys, time
 
 cfg, image, base = sys.argv[1], sys.argv[2], int(sys.argv[3], 0)
 OPENOCD = os.environ.get('OPENOCD') or 'openocd'
-SPEED = int(os.environ.get('STLINK_DIRECT_SPEED') or 200)
-BATCH = int(os.environ.get('STLINK_DIRECT_BATCH') or 256)
+SPEED = int(os.environ.get('STLINK_DIRECT_SPEED') or 1800)
+BATCH = int(os.environ.get('STLINK_DIRECT_BATCH') or 4096)
 erase = "--erase" in sys.argv[4:]
 ref = open(image, 'rb').read()
 ref += b'\xff' * (-len(ref) % 32)

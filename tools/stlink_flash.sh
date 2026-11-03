@@ -60,7 +60,7 @@
 #   tools/stlink_flash.sh <image.bin|image.hex> [base_addr_for_bin]
 #
 # Environment overrides:
-#   STLINK_SPEED            first SWD kHz             (default 50)
+#   STLINK_SPEED            first SWD kHz             (default 1000)
 #   STLINK_WORKAREA_SIZE    loader RAM size           (default 0x10000)
 #   STLINK_RESET_HALT       1 = halt out of reset     (default 1)
 #   STLINK_HALT_TRIES       halt attempts             (default 4)
@@ -76,9 +76,9 @@
 #                            stflash only when forced - it fails on this
 #                            fixture)
 #   STLINK_DIRECT_WRITER    word-by-word writer (default h7_direct/h7_robust_write.py)
-#   STLINK_DIRECT_SPEED     direct writer SWD kHz     (default 200; higher is
+#   STLINK_DIRECT_SPEED     direct writer SWD kHz     (default 1800; higher is
 #                            faster on a clean link)
-#   STLINK_DIRECT_BATCH     flash words per writer session (default 256)
+#   STLINK_DIRECT_BATCH     flash words per writer session (default 4096)
 #   STLINK_STFLASH          st-flash binary           (default st-flash)
 #   STLINK_MASS_ERASE       1 = erase before writing (whole flash with st-flash,
 #                            every sector the image touches with the direct
@@ -185,7 +185,7 @@ def _flag(name, default=True):
 
 
 OPENOCD = _env("OPENOCD", "openocd")
-SPEED = int(_env("STLINK_SPEED", "50"), 0)
+SPEED = int(_env("STLINK_SPEED", "1000"), 0)
 WA_SIZE = int(_env("STLINK_WORKAREA_SIZE", "0x10000"), 0)
 RESET_HALT = _flag("STLINK_RESET_HALT", True)
 HALT_TRIES = max(1, int(_env("STLINK_HALT_TRIES", "4"), 0))

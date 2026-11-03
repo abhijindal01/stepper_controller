@@ -137,7 +137,7 @@ Knobs (environment):
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `STLINK_SPEED` | `50` | SWD kHz for erase/write (auto-halves on DAP stalls) |
+| `STLINK_SPEED` | `1000` | SWD kHz for erase/write (auto-halves on DAP stalls) |
 | `STLINK_WORKAREA` | auto | Force the loader RAM address |
 | `STLINK_WORKAREA_SIZE` | `0x10000` | Loader RAM size |
 | `STLINK_ATTEMPTS` | `3` | Attempts per sector |
@@ -150,7 +150,7 @@ Knobs (environment):
 | `STLINK_FULL_VERIFY` | `1` | Second whole-image verify pass (`0` = per-sector only) |
 | `STLINK_PROBE_SIZE` | `1` | Probe the device flash size before writing (see *probed size* below) |
 | `STLINK_ALLOW_OVERSIZE` | `0` | Write an image bigger than the probed flash instead of refusing it |
-| `STLINK_FLASH_TIMEOUT` | `1800` | Server-side (`stlink.py`) ceiling for the whole flash (s) |
+| `STLINK_FLASH_TIMEOUT` | `3600` | Server-side (`stlink.py`) ceiling for the whole flash (s) |
 | `STLINK_CONNECT_BACKOFF` | `2` | Seconds before a failed *connect* is retried (0/2/4 s ladder) |
 | `STLINK_FLASH_PRECHECK` | `1` | Run a 3-session link check before flashing (`0` = skip) |
 | `STLINK_FLASH_PRECHECK_N` / `_MIN` | `3` / `66` | Sessions and pass rate the pre-check needs |
@@ -159,6 +159,8 @@ Knobs (environment):
 | `STLINK_BACKEND` | `auto` | `auto` / `direct` / `stflash` writer (see *Backend*; `ocd` was removed) |
 | `STLINK_STFLASH` | `st-flash` | `st-flash` binary used by the wrapper |
 | `STLINK_DIRECT_WRITER` | `tools/h7_direct/h7_robust_write.py` | word-by-word sector-0 writer used by the `direct` backend |
+| `STLINK_DIRECT_SPEED` | `1800` | SWD kHz the direct writer uses (was 200) |
+| `STLINK_DIRECT_BATCH` | `4096` | flash words per writer OpenOCD session (fewer restarts) |
 | `STLINK_MASS_ERASE` | `0` | Erase the whole flash first (see *Mass erase* - the size check still runs first) |
 | `STLINK_VERIFY_OCD` | `1` | Verify the written image with OpenOCD's readback |
 | `STLINK_LOG_DIR` | `/tmp` | Where per-session logs (`stlink_flash_*.log`) are kept |
@@ -171,6 +173,22 @@ Knobs (environment):
 | `STLINK_READBACK_BYTES` | `0x2000` | Size of the preflight readback |
 | `STLINK_BLANK_CHECK` | `1` | After an erase (mass erase / st-flash page erase) require the range to read `0xFF` |
 | `STLINK_RAM_INTEGRITY` | `1` | Load a 4 KiB random block into each RAM region and read it back |
+
+#### Update 2026-11-03: faster defaults
+
+The same pogo contact flashes in ~5 min from a PC, so the slow clocks were not
+needed. Measured on the fixture with the full ArduCopter image (1.6 MB):
+
+| Settings | Write | Whole flash |
+|---|---|---|
+| old (`STLINK_SPEED=50`, direct 200 kHz, batch 256) | ~19 min | ~25-30 min, often hit the 30 min server limit |
+| new (`STLINK_SPEED=1000`, direct 1800 kHz, batch 4096), erase + write | - | **3 min 47 s**, `FLASH_OK` |
+
+`STLINK_FLASH_TIMEOUT` went from 1800 to 3600 s so a slow run is not killed
+mid-write. If a pad misbehaves, fall back with `STLINK_DIRECT_SPEED=200
+STLINK_SPEED=50`. Still open: the final bulk `dump_image` readbacks disagree
+with each other at 1000 kHz, so the wrapper falls back to the writer's
+word-by-word reads (every word is read twice after it is written).
 
 ### First: is the SWD link healthy?
 
