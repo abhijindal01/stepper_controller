@@ -60,7 +60,7 @@ def one_session() -> tuple[bool, str, str]:
         "-f",
         cfg,
         "-c",
-        f"init; adapter speed {SPEED}; halt",
+        f"adapter speed {SPEED}; init; halt",
         "-c",
         "catch {mww 0xe0002000 0x00000000}",  # AP write into FPB: link proof
         "-c",

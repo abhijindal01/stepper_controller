@@ -146,14 +146,14 @@ fi
 step "0. link check (OpenOCD examine, no erase, no reset)"
 if [[ "$have_ocd" = "1" ]]; then
     if [[ "$DRY_RUN" = "1" ]]; then
-        printf '   [dry-run] openocd ... -c "init; adapter speed %s; reset halt; reg pc; exit"\n' "$SPEED"
+        printf '   [dry-run] openocd ... -c "adapter speed %s; init; reset halt; reg pc; exit"\n' "$SPEED"
         CONTACT=1
     else
         # No `if {}` in Tcl here: the halt verdict is read from the log, because
         # a Tcl branch that never runs looks exactly like a halt that worked.
         HALT_LOG="$(mktemp)"
         "$OPENOCD" -f "$CFG" \
-            -c "init; adapter speed ${SPEED}" \
+            -c "adapter speed ${SPEED}; init" \
             -c "reset halt" \
             -c "reg pc" -c "reg msp" \
             -c 'echo "RECOVER_HALT_DONE"' \
@@ -258,7 +258,7 @@ fi
 
 VERIFY_LOG="$(mktemp)"
 "$OPENOCD" -f "$CFG" \
-    -c "init; adapter speed ${SPEED}" \
+    -c "adapter speed ${SPEED}; init" \
     -c 'catch {reset halt}' \
     -c "verify_image $IMG $BASE" \
     -c "exit" > "$VERIFY_LOG" 2>&1
@@ -267,7 +267,7 @@ VRC=$?
 if [[ $VRC -eq 0 ]] && grep -qi "verified" "$VERIFY_LOG"; then
     ok "readback matches ($(grep -io 'verified [0-9]* bytes[^)]*' "$VERIFY_LOG" | head -1))"
     step "4. release the target"
-    if "$OPENOCD" -f "$CFG" -c "init; adapter speed ${SPEED}" \
+    if "$OPENOCD" -f "$CFG" -c "adapter speed ${SPEED}; init" \
         -c "reset run" -c 'echo "RECOVER_RUN"' -c "exit" 2>&1 | grep -q RECOVER_RUN
     then
         ok "target running"

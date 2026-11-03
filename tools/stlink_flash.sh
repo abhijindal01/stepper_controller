@@ -476,7 +476,7 @@ def ram_usable(phys: int, size: int, speed: int) -> tuple[bool, str, int | None]
     ]
     expected = {addr: _probe_value(i, addr) for i, addr in enumerate(spots)}
 
-    cmds = wa_commands(phys, size) + [f"init; adapter speed {speed}; halt"]
+    cmds = wa_commands(phys, size) + [f"adapter speed {speed}; init; halt"]
     cmds += [f"mww {addr:#x} {val:#x}" for addr, val in expected.items()]
     cmds += [f"mdw {addr:#x}" for addr in expected]
     cmds.append("exit")
@@ -568,7 +568,7 @@ def halt_target(speed: int) -> str:
     if RESET_HALT:
         for attempt in range(1, HALT_TRIES + 1):
             cmds = [
-                f"init; adapter speed {speed}",
+                f"adapter speed {speed}; init",
                 "catch {reset halt}",
                 f"mdw {DHCSR:#x}",
                 "exit",
@@ -590,7 +590,7 @@ def halt_target(speed: int) -> str:
 
             # A running app: stop it and stretch the IWDG before it bites.
             cmds = [
-                f"init; adapter speed {speed}",
+                f"adapter speed {speed}; init",
                 "catch {halt}",
                 f"catch {{mww {IWDG_KR:#x} 0x5555}}",
                 f"catch {{mww {IWDG_RLR:#x} 0xfff}}",
@@ -611,7 +611,7 @@ def halt_target(speed: int) -> str:
 
     # Last resort: iterate `halt` without a reset, in one session.
     cmds = [
-        f"init; adapter speed {speed}",
+        f"adapter speed {speed}; init",
         "catch {halt}",
         "sleep 200",
         "catch {halt}",
@@ -682,7 +682,7 @@ def word_from(text: str, addr: int) -> int | None:
 def read_vectors(speed: int) -> tuple[int | None, int | None]:
     """SP/PC from the vector table at 0x08000000 (0xFFFFFFFF = blank sector)."""
     cmds = [
-        f"init; adapter speed {speed}",
+        f"adapter speed {speed}; init",
         "catch {halt}",
         f"mdw {FLASH_BASE:#x}",
         f"mdw {FLASH_BASE + 4:#x}",
@@ -710,7 +710,7 @@ def probed_flash_size(speed: int) -> int | None:
     """Device flash size in bytes from the driver's own probe, if it answers."""
     rc, text = run_openocd(
         [
-            f"init; adapter speed {speed}",
+            f"adapter speed {speed}; init",
             "catch {halt}",
             "flash probe 0",
             "exit",
@@ -736,7 +736,7 @@ def missing_flash(addrs: list[int], speed: int) -> list[int]:
         if not left:
             break
         rc, text = run_openocd(
-            [f"init; adapter speed {speed}", "catch {reset halt}"]
+            [f"adapter speed {speed}; init", "catch {reset halt}"]
             + [f"mdw {a:#010x}" for a in left] + ["exit"],
             timeout=min(OCD_TIMEOUT, 90),
         )
@@ -809,7 +809,7 @@ def read_flash(base: int, length: int, speed: int) -> tuple[bytes | None, str]:
     out = tmpdir / "rb.bin"
     try:
         cmds = [
-            f"init; adapter speed {speed}",
+            f"adapter speed {speed}; init",
             "catch {reset halt}",
             f"dump_image {out} {base:#x} {length:#x}",
             "exit",
@@ -896,7 +896,7 @@ def ram_integrity(phys: int, speed: int, size: int = 0x1000) -> tuple[bool, str]
     dst = tmpdir / "back.bin"
     try:
         cmds = [
-            f"init; adapter speed {speed}",
+            f"adapter speed {speed}; init",
             "catch {reset halt}",
             f"mdw {DHCSR:#x}",
             f"load_image {src} {phys:#x} bin",
@@ -1157,7 +1157,7 @@ def release_target(speed: int) -> None:
     if not RUN_AFTER:
         return
     rc, text = run_openocd_connect(
-        [f"init; adapter speed {speed}", "reset run", 'echo "FLASH_RUN"', "exit"],
+        [f"adapter speed {speed}; init", "reset run", 'echo "FLASH_RUN"', "exit"],
         timeout=min(OCD_TIMEOUT, 120),
     )
     if "FLASH_RUN" in text and "Error:" not in text:
