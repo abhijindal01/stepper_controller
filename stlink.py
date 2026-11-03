@@ -221,18 +221,9 @@ FLASH_FAILURE_KINDS = {
         4,
         "flash_fail",
         "The word-by-word writer stopped: the SWD link would not give "
-        "consistent reads, or sector 0 holds data that is neither blank nor "
-        "the image. Re-run it - it resumes where it stopped and never "
-        "programs a word twice.",
-    ),
-    "nowriter": (
-        5,
-        "no_writer",
-        "This image reaches past sector 0, and the only writer that works on "
-        "this fixture (the direct writer) only knows sector 0. Nothing was "
-        "erased. Flash a bootloader-only image (128 KiB or less at "
-        "0x08000000); the application sectors have no working writer here "
-        "yet.",
+        "consistent reads, or a sector kept holding data that is neither "
+        "blank nor the image. Re-run it - it resumes where it stopped and "
+        "never programs a word twice.",
     ),
     "swd": (
         3,
@@ -259,10 +250,11 @@ FLASH_FAILURE_KINDS = {
     "size": (
         5,
         "image_too_big",
-        "The image is larger than the flash this target reports (the pad "
-        "returns 1024 KiB, i.e. an H743xG / relabelled H750). Nothing was "
-        "erased. Build for FLASH_SIZE_KB 1024, or re-probe the flash size on "
-        "a clean link - STLINK_ALLOW_OVERSIZE=1 forces the write.",
+        "The image is larger than the flash this target reports, and the "
+        "sectors past it did not answer a read. Nothing was erased. The pad "
+        "reports 1024 KiB but has 2 MiB, so a marginal link is the usual "
+        "cause - re-seat the pads and retry; build for FLASH_SIZE_KB 1024 if "
+        "the part really is 1 MiB. STLINK_ALLOW_OVERSIZE=1 forces the write.",
     ),
     "vectors": (
         5,
@@ -270,6 +262,13 @@ FLASH_FAILURE_KINDS = {
         "Sector 0 holds no vector table, so the board cannot boot (pc "
         "0xfffffffe / msp 0xfffffffc) and an app-only image cannot repair it. "
         "Nothing was erased - flash a full image from 0x08000000.",
+    ),
+    "busy": (
+        3,
+        "busy",
+        "Another flash is already running on this ST-LINK (from this page "
+        "or a terminal). Nothing was erased. Let it finish - two flashes at "
+        "once make the link look broken and can program a word twice.",
     ),
     "timeout": (
         4,

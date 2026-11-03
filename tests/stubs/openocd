@@ -39,6 +39,9 @@ Environment:
                      0xFFFFFFFF, like a board left mid-flash
   STUB_FLASH_SIZE_KB device flash size reported by `flash probe 0` (default
                      2048); the stm32h7x driver splits it over two banks
+  STUB_FLASH_PHYS_KB flash physically on the die (default STUB_FLASH_SIZE_KB):
+                     `mdw` past it fails like a bus fault - set 2048 with
+                     STUB_FLASH_SIZE_KB=1024 for the pad's under-reporting part
   STUB_WRITE_FAIL_ONCE=1  the *first* `flash write_image` of the whole run
                      fails with "Failed to write memory at 0x<wa>4074"
   STUB_WRITE_STATE_FILE  where that one-shot flag lives
@@ -350,6 +353,16 @@ def verify_against(path_text: str, base: int) -> None:
     emit(f"verified {len(want)} bytes at 0x{base:08x} in 0.002000s")
 
 
+def no_flash(addr):
+    """True for flash addresses past the die (dual bank: half per bank)."""
+    if not 0x08000000 <= addr < 0x08200000:
+        return False
+    phys_kb = int(os.environ.get("STUB_FLASH_PHYS_KB")
+                  or os.environ.get("STUB_FLASH_SIZE_KB") or "2048", 0)
+    off = addr - 0x08000000
+    return off % 0x100000 >= phys_kb * 1024 // 2
+
+
 def do_statement(stmt: str) -> None:
     if stmt.startswith("echo "):
         text = stmt[5:].strip()
@@ -438,7 +451,7 @@ def do_statement(stmt: str) -> None:
             fail(f"Error: Failed to read memory at 0x{addr:08x}")
         if state["dropped"]:
             fail("Error: Failed to read memory and, additionally, failed to find out where")
-        if broken(addr):
+        if broken(addr) or no_flash(addr):
             fail(f"Error: Failed to read memory at 0x{addr:08x}")
         if addr == 0xE000EDF0:
             # DHCSR: S_HALT (bit 17) reflects whether the core stopped

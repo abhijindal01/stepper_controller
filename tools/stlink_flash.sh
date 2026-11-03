@@ -16,11 +16,16 @@
 #    The direct writer drives the flash controller registers through plain
 #    OpenOCD memory access (no loader, no code on the target), one 32-byte
 #    flash word at a time: it reads every word back by majority before moving
-#    on, never programs a word twice and writes the vector table last. It only
-#    knows sector 0 (128 KiB @ 0x08000000), so an image that does not fit there
-#    is refused before anything is erased - there is no working writer for it
-#    on this fixture yet. OpenOCD stays for the halt, the probe, the readback
-#    and as the direct writer's transport.
+#    on, never programs a word twice and writes the vector table last. It
+#    covers both banks: a sector holding foreign data is erased sector by
+#    sector, and the sector at 0x08000000 is placed first. OpenOCD stays for
+#    the halt, the probe, the readback and as the direct writer's transport.
+#
+# 1a. Flash size. The pad's FLASHSIZE register reads 1024 KiB (an H743xG
+#    marking) but the die has 2 MiB - USB DFU writes a 1.6 MB image to it. When
+#    the image is bigger than the probed size, the top word of every sector it
+#    needs is read: flash that does not exist bus-faults, flash that does
+#    answers. Only if every sector answers does the write go ahead.
 #
 # 2. Halting. `halt` on a running app does not stick (erratum 3092511 leaves
 #    the core running, and the app's IWDG then resets the chip mid erase/write:
@@ -65,14 +70,19 @@
 #   STLINK_RUN_AFTER        1 = `reset run` at end    (default 1)
 #   STLINK_PROBE_SIZE       1 = probe the device flash size first (default 1)
 #   STLINK_ALLOW_OVERSIZE   1 = write an image bigger than the probed flash
-#                            (default 0: refuse, see FLASH_WARN in the log)
-#   STLINK_BACKEND          auto|direct|stflash       (default auto: direct; an
-#                            image past sector 0 is refused. stflash only when
-#                            forced - it fails on this fixture)
+#                            even if its sectors do not answer (default 0:
+#                            refuse unless they answer, see FLASH_WARN)
+#   STLINK_BACKEND          auto|direct|stflash       (default auto: direct.
+#                            stflash only when forced - it fails on this
+#                            fixture)
 #   STLINK_DIRECT_WRITER    word-by-word writer (default h7_direct/h7_robust_write.py)
+#   STLINK_DIRECT_SPEED     direct writer SWD kHz     (default 200; higher is
+#                            faster on a clean link)
+#   STLINK_DIRECT_BATCH     flash words per writer session (default 256)
 #   STLINK_STFLASH          st-flash binary           (default st-flash)
 #   STLINK_MASS_ERASE       1 = erase before writing (whole flash with st-flash,
-#                            sector 0 with the direct writer)
+#                            every sector the image touches with the direct
+#                            writer)
 #                            (default 0; the size check runs first, always)
 #   STLINK_LOG_DIR          where session logs go     (default /tmp)
 #   STLINK_KEEP_LOGS        1 = keep every session log (default 1)
@@ -90,13 +100,16 @@
 #                            0xFF before writing (default 1)
 #   STLINK_RAM_INTEGRITY    1 = load a random block into the work area and read
 #                            it back before erasing (default 1)
+#   STLINK_LOCK             one-flash-at-a-time lock file
+#                            (default /run/lock/stlink_flash.lock)
 #   OPENOCD                 openocd binary            (default openocd)
 #
 # Exit codes: 0 ok, 1 usage/file error (including an image that does not fit
 #             the probed flash size), 2 no writable work area or unhealthy
 #             link, 3 flash/verify failed or link lost, 4 target would not
 #             halt, 5 the board's vector table is blank and this image does not
-#             restore it (flash a full image from 0x08000000 instead).
+#             restore it (flash a full image from 0x08000000 instead), 6
+#             another flash already holds the ST-LINK.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 CFG="${ROOT}/openocd_fixture.cfg"
@@ -104,7 +117,7 @@ PY="${ROOT}/../venv/bin/python3"
 [[ -x "$PY" ]] || PY=python3
 
 if [[ $# -lt 1 || "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  sed -n '2,99p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,112p' "$0" | sed 's/^# \{0,1\}//'
   [[ $# -lt 1 ]] && exit 1
   exit 0
 fi
@@ -116,6 +129,23 @@ if [[ ! -f "$IMG" ]]; then
   echo "file not found: $IMG" >&2
   exit 1
 fi
+
+# One flash at a time. Two runs on one ST-LINK knock each other's OpenOCD
+# sessions off (it looks exactly like a bad harness), and two direct writers can
+# both see a word blank and both program it. The lock is held on fd 9 by the
+# Python below (exec keeps it open) until the flash ends.
+LOCK="${STLINK_LOCK:-/run/lock/stlink_flash.lock}"
+if ! exec 9>>"$LOCK"; then
+  echo "FLASH_FAILED usage: cannot open the lock file $LOCK - nothing was erased" >&2
+  exit 1
+fi
+if ! flock -n 9; then
+  echo "FLASH_FAILED busy: another flash is already running on this ST-LINK" \
+       "(pid $(cat "$LOCK" 2>/dev/null || echo '?')) - nothing was erased; let it" \
+       "finish, or stop it, before starting another" >&2
+  exit 6
+fi
+echo $$ > "$LOCK"
 
 exec "$PY" - "$IMG" "$BASE" "$CFG" <<'PY'
 import os
@@ -693,6 +723,29 @@ def probed_flash_size(speed: int) -> int | None:
     return int(m.group(1)) * 1024 if m else None
 
 
+def missing_flash(addrs: list[int], speed: int) -> list[int]:
+    """Addresses whose flash word never read back - no flash there.
+
+    FLASHSIZE can under-report (this pad: 1024 KiB on a 2 MiB die), so the
+    flash itself is asked: a read past the die bus-faults. A failed read ends
+    the OpenOCD session, so the rest are tried again in the next one; a link
+    glitch therefore only ever errs towards "missing" (refuse).
+    """
+    left = list(addrs)
+    for _ in range(3):
+        if not left:
+            break
+        rc, text = run_openocd(
+            [f"init; adapter speed {speed}", "catch {reset halt}"]
+            + [f"mdw {a:#010x}" for a in left] + ["exit"],
+            timeout=min(OCD_TIMEOUT, 90),
+        )
+        seen = {int(m.group(1), 16)
+                for m in re.finditer(r"^(0x[0-9a-f]{8}):\s*[0-9a-f]{8}", text, re.I | re.M)}
+        left = [a for a in left if a not in seen]
+    return left
+
+
 # ------------------------------------------------------------------- session logs
 
 SESSIONS = 0
@@ -954,10 +1007,6 @@ def ram_integrity_report(speed: int, needed: int) -> bool:
 
 def stflash_available() -> bool:
     return shutil.which(STFLASH) is not None
-
-
-def fits_sector0() -> bool:
-    return flash_base == FLASH_BASE and end <= FLASH_BASE + SECTOR
 
 
 def resolve_backend() -> str:
@@ -1247,11 +1296,11 @@ def run_direct(bin_path: Path, erase: bool) -> tuple[int, str]:
 
 
 def flash_with_direct() -> None:
-    """Sector 0 through h7_direct/h7_robust_write.py (see quirk 4).
+    """The whole image through h7_direct/h7_robust_write.py (see quirk 1).
 
     The writer resumes: words that already hold the image are skipped, blank
-    ones are written. Only when it finds foreign data does it ask for an
-    erase, and then it is re-run once with --erase.
+    ones are written, and a sector holding foreign data is erased by the
+    writer itself.
     """
     started = time.monotonic()
     tmpdir = Path(tempfile.mkdtemp(prefix="stlink_flash_"))
@@ -1261,18 +1310,22 @@ def flash_with_direct() -> None:
 
         erase = MASS_ERASE
         if erase:
-            print("mass erase requested - the direct writer erases sector 0 "
-                  "only, the rest of the flash is left alone", flush=True)
+            print("mass erase requested - the direct writer erases every "
+                  "sector the image touches, the rest of the flash is left "
+                  "alone", flush=True)
+        # No automatic --erase retry: the writer erases sectors with foreign
+        # data itself, and a re-run after a link abort must resume, not erase
+        # the whole image range again.
         rc, text = run_direct(bin_path, erase)
-        if rc != 0 and not erase and "--erase" in text:
-            print("  sector 0 holds other data - erasing it and writing again",
-                  flush=True)
-            erase = True
-            rc, text = run_direct(bin_path, erase)
         note_log("direct", text)
         if rc != 0 or "ROBUST_WRITE_DONE" not in text:
-            if erase:
-                TOUCHED.append("sector 0 @ 0x08000000 (erased by the direct writer)")
+            for m in re.finditer(r"^\s*erased (bank \d+ sector \d+ @ 0x[0-9a-f]+)",
+                                 text, re.M):
+                if m.group(1) not in TOUCHED:
+                    TOUCHED.append(m.group(1))
+            if erase and not TOUCHED:
+                TOUCHED.append("the sectors the image touches (erased by the "
+                               "direct writer)")
             sys.stderr.write(
                 f"FLASH_FAILED direct: {explain('direct')}\n" + damage_note()
                 + "    re-run the same command - the writer resumes where it "
@@ -1393,7 +1446,23 @@ if PROBE_SIZE:
         dev_end = FLASH_BASE + device_flash
         print(f"device flash: probed {device_flash // 1024} KiB "
               f"({FLASH_BASE:#x}..{dev_end:#x})", flush=True)
+        missing = []
         if end > dev_end:
+            # Top word of every sector the image needs: on a die that really
+            # is this small, those past its end bus-fault.
+            first = FLASH_BASE + (flash_base - FLASH_BASE) // SECTOR * SECTOR
+            missing = missing_flash(
+                [a + SECTOR - 32 for a in range(first, end, SECTOR)], speed)
+            if not missing:
+                print(
+                    f"device flash: FLASHSIZE says {device_flash // 1024} KiB, but "
+                    f"every sector up to {end:#010x} answers - the die is bigger "
+                    "than its marking\n"
+                    "    (an H743xG on the 2 MiB die; USB DFU writes these too) - "
+                    "writing the whole image",
+                    flush=True,
+                )
+        if missing:
             print(
                 "FLASH_WARN image does not fit the probed flash size\n"
                 f"    image : {flash_base:#010x}..{end:#010x} "
@@ -1405,7 +1474,9 @@ if PROBE_SIZE:
                 "    1 MiB, an IndiH743 is normally 2 MiB). Sectors past "
                 f"{dev_end:#010x} do not\n"
                 "    exist, so the write would die there - after erasing "
-                "everything before it.",
+                "everything before it.\n"
+                "    no flash answers at: "
+                + ", ".join(f"{a:#010x}" for a in missing[:4]),
                 flush=True,
             )
             if not ALLOW_OVERSIZE:
@@ -1414,14 +1485,14 @@ if PROBE_SIZE:
                     f"{len(image)} bytes into {device_flash // 1024} KiB of "
                     "flash - nothing was erased\n"
                     "    build the image for this part (FLASH_SIZE_KB), or "
-                    "redo the probe if the\n"
+                    "re-seat the pads if the\n"
                     "    part is really 2 MiB (STLINK_ALLOW_OVERSIZE=1 forces "
                     "the write)\n"
                 )
                 raise SystemExit(1)
 
 # ---------------------------------------------------------------- backend choice
-# Only the direct writer works on this fixture, and only for sector 0 (quirk 1).
+# Only the direct writer works on this fixture (quirk 1).
 backend = resolve_backend()
 print(f"backend: {backend}", flush=True)
 
@@ -1430,18 +1501,6 @@ print(f"backend: {backend}", flush=True)
 # data), so neither gate below applies to it - and the bulk readback both use
 # is exactly what this dongle drops words on.
 if backend == "direct":
-    if not fits_sector0():
-        sys.stderr.write(
-            f"FLASH_FAILED nowriter: the image spans {flash_base:#x}..{end:#x}, "
-            "but the only writer that works on this fixture (the direct writer) "
-            "only knows sector 0 (0x08000000..0x08020000) - nothing was erased\n"
-            "    flash a bootloader-only image (<= 128 KiB at 0x08000000); "
-            "there is no working\n"
-            "    writer for the application sectors here yet "
-            "(STLINK_BACKEND=stflash tries st-flash,\n"
-            "    which has failed on this fixture with 0x00040000)\n"
-        )
-        raise SystemExit(1)
     if not DIRECT_WRITER.is_file():
         sys.stderr.write(f"FLASH_FAILED direct: {DIRECT_WRITER} is missing\n")
         raise SystemExit(1)

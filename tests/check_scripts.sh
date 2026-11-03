@@ -163,6 +163,7 @@ OCD_LOG="$TMP_FLASH/ocd.log"
 # stands in for it and writes the fake OpenOCD's flash.
 DIRECT_STUB="$HERE/stubs/direct/h7_robust_write.py"
 export STLINK_DIRECT_WRITER="$DIRECT_STUB"
+export STLINK_LOCK="$TMP_FLASH/stlink_flash.lock"
 
 python3 - "$IMAGE_BIN" "$IMAGE_HEX" <<'PY'
 import sys
@@ -324,7 +325,7 @@ else
     fail "flash refuses out-of-flash base (exit $RC)"
 fi
 
-# A two-sector image, for the size and no-writer refusals further down.
+# A two-sector image, for the size checks and multi-sector writes further down.
 python3 - "$TMP_FLASH/two_sectors.bin" <<'PY2'
 import sys
 
@@ -554,11 +555,19 @@ else
 fi
 
 run_direct "foreign data in sector 0 is erased, then written" 0 STUB_DIRECT_FOREIGN=1
-expect_log "the erase is announced" "erasing it and writing again"
-if [ "$(grep -c -- "--erase" "$DIRECT_LOG" 2>/dev/null)" = "1" ]; then
-    pass "exactly one --erase run"
+expect_log "the erase is announced" "holds other data - erasing it"
+if grep -q -- "--erase" "$DIRECT_LOG" 2>/dev/null; then
+    fail "the writer erases by itself - no --erase re-run"
 else
-    fail "exactly one --erase run"
+    pass "the writer erases by itself - no --erase re-run"
+fi
+
+# A link abort whose text mentions --erase must not turn into an erase-all run.
+run_direct "a link abort is not retried with --erase" 3 STUB_DIRECT_DIE=1
+if grep -q -- "--erase" "$DIRECT_LOG" 2>/dev/null; then
+    fail "no --erase run after a link abort"
+else
+    pass "no --erase run after a link abort"
 fi
 
 run_direct "a writer that gives up fails the flash" 3 STUB_DIRECT_DIE=1
@@ -576,15 +585,54 @@ run_direct "a bulk read that disagrees with itself does not fail the flash" 0 \
 reject_log "an unstable readback is not called a mismatch" "FLASH_FAILED"
 
 rm -f "$DIRECT_LOG"
-run_flash_with_image "an image past sector 0 is refused" 1 \
+run_flash_with_image "an image past sector 0 goes to the direct writer" 0 \
     "$TMP_FLASH/two_sectors.bin" STLINK_BACKEND=auto STUB_DIRECT_LOG="$DIRECT_LOG"
-expect_log "the refusal is classified" "FLASH_FAILED nowriter"
-expect_log "the limit is spelled out" "only knows sector 0"
+expect_log "the whole image is written" "FLASH_OK 262144 bytes"
 reject_log "auto never falls back to st-flash" "backend: stflash"
-if [ -s "$DIRECT_LOG" ] || [ -s "$SFLASH_LOG" ]; then
-    fail "no writer runs for an image past sector 0"
+if grep -q "^direct " "$DIRECT_LOG" 2>/dev/null; then
+    pass "the direct writer gets the multi-sector image"
 else
-    pass "no writer runs for an image past sector 0"
+    fail "the direct writer gets the multi-sector image"
+fi
+
+# The pad's FLASHSIZE says 1024 KiB on a 2 MiB die: when every sector the image
+# needs answers a read, the size register does not get to refuse it.
+rm -f "$DIRECT_LOG"
+run_flash_with_image "flash that answers past FLASHSIZE is written" 0 \
+    "$TMP_FLASH/two_sectors.bin" STLINK_BACKEND=auto STUB_DIRECT_LOG="$DIRECT_LOG" \
+    STUB_FLASH_SIZE_KB=128 STUB_FLASH_PHYS_KB=2048
+expect_log "the under-report is named" "the die is bigger than its marking"
+reject_log "no size refusal" "FLASH_FAILED size"
+expect_log "the whole image is written" "FLASH_OK 262144 bytes"
+
+rm -f "$DIRECT_LOG"
+run_flash_with_image "flash that does not answer past FLASHSIZE is refused" 1 \
+    "$TMP_FLASH/two_sectors.bin" STLINK_BACKEND=auto STUB_DIRECT_LOG="$DIRECT_LOG" \
+    STUB_FLASH_SIZE_KB=128
+expect_log "the refusal is classified" "FLASH_FAILED size"
+expect_log "the missing sector is named" "no flash answers at: 0x"
+if [ -s "$DIRECT_LOG" ]; then
+    fail "no writer runs for flash that is not there"
+else
+    pass "no writer runs for flash that is not there"
+fi
+
+# A second flash while one holds the ST-LINK is refused before it touches it.
+rm -f "$OCD_LOG"
+OUT="$(flock "$STLINK_LOCK" env PATH="$HERE/stubs:$PATH" STUB_OPENOCD_LOG="$OCD_LOG" \
+    bash "$ROOT/tools/stlink_flash.sh" "$IMAGE_HEX" 2>&1)"
+RC=$?
+printf '%s' "$OUT" > "$TMP_FLASH/last.log"
+if [ "$RC" = "6" ]; then
+    pass "a second flash is refused while one runs (exit 6)"
+else
+    fail "a second flash is refused while one runs (exit $RC, wanted 6)"
+fi
+expect_log "the refusal is classified" "FLASH_FAILED busy"
+if [ -s "$OCD_LOG" ]; then
+    fail "the refused flash never opens OpenOCD"
+else
+    pass "the refused flash never opens OpenOCD"
 fi
 
 run_sflash "STLINK_BACKEND=ocd is a usage error" 1 STLINK_BACKEND=ocd

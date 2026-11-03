@@ -3,8 +3,7 @@
     h7_robust_write.py CFG IMAGE BASE [--erase]
 
   STUB_DIRECT_LOG=path      append each call's arguments here
-  STUB_DIRECT_FOREIGN=1     sector 0 holds other data: abort asking for --erase
-                            unless --erase was given
+  STUB_DIRECT_FOREIGN=1     the flash holds other data: erase its sector, then write
   STUB_DIRECT_DIE=1         the link never gives consistent reads: abort
   STUB_DIRECT_NOWRITE=1     claim success without writing (a lying writer)
 
@@ -19,11 +18,12 @@ if log:
         fh.write("direct " + " ".join(sys.argv[1:]) + "\n")
 erase = "--erase" in sys.argv[4:]
 if erase:
-    print("sector 0 erased", flush=True)
+    print("erased bank 1 sector 0 @ 0x08000000", flush=True)
 if os.environ.get("STUB_DIRECT_DIE") == "1":
-    sys.exit("ABORT: cannot read ['0x8000000'] reliably - link too poor. Nothing rewritten.")
+    sys.exit("ABORT: cannot read ['0x8000000'] reliably - link too poor, or ECC-damaged (then re-run with --erase on a healthy link). Nothing rewritten.")
 if os.environ.get("STUB_DIRECT_FOREIGN") == "1" and not erase:
-    sys.exit("ABORT: words programmed with wrong data ['0x8000000'] - re-run with --erase")
+    print("  bank 1 sector 0 @ 0x08000000 holds other data - erasing it", flush=True)
+    print("erased bank 1 sector 0 @ 0x08000000", flush=True)
 data = open(sys.argv[2], "rb").read()
 mem = os.environ.get("STUB_MEM_DIR")
 if mem and os.environ.get("STUB_DIRECT_NOWRITE") != "1":

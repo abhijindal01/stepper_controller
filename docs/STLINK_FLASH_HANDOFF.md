@@ -4,7 +4,7 @@
 **OpenOCD:** `/usr/bin/openocd` `0.12.0+rpt…` — halt, probe, readback, and the direct writer's transport; its flash loader is **not used** (removed from the wrapper)  
 **Write path:** `tools/h7_direct/h7_robust_write.py` for sector 0 (see *Backend*); `st-flash` 1.8.0 / 1.9.0 **fails here**  
 **No NRST** on pogo harness — only SWCLK, SWDIO, GND (+ VTarget sense).  
-**Part:** STM32H743**xG**, **1 MiB** flash (confirmed by `st-flash` *and* OpenOCD), 128 KiB pages.
+**Part:** STM32H743**xG** marking: FLASHSIZE reads **1 MiB**, but the die has **2 MiB** (USB DFU and the direct writer use all of it - see *Update 2026-11-02*), 128 KiB pages.
 
 > Read *Backend* and *Mass erase* before flashing anything. On this fixture the
 > tool that erases is not the tool that can write, and the one time that was
@@ -87,7 +87,7 @@ so the wrapper resolves a backend automatically:
 
 | `STLINK_BACKEND` | Behaviour |
 |------------------|-----------|
-| `auto` (default) | the direct writer; an image past sector 0 is refused with `FLASH_FAILED nowriter` before anything is erased |
+| `auto` (default) | the direct writer, for the whole image (both banks) |
 | `direct` | same as `auto` |
 | `stflash` | force `st-flash` (fails with exit 1 and an install hint if missing). It has failed on this fixture; kept for other dongles/boards |
 | `ocd` | **removed** - exit 1, `FLASH_FAILED usage`. The OpenOCD flash-loader path was deleted from the wrapper |
@@ -112,12 +112,13 @@ flash loader), and
 - writes the vector table **last**, so an interrupted run leaves a board that
   will not boot but still answers SWD;
 - resumes: re-running it skips words that already hold the image;
-- erases sector 0 only with `--erase` (the wrapper adds that once, by itself,
-  when the writer reports foreign data).
+- erases a sector itself when it finds foreign data in it (at most 3 times
+  per sector per run); `--erase` erases every sector the image touches first.
 
-All 581 words of the bootloader went in that way (about 18.6 KB). It only
-knows sector 0, so the ArduCopter application (which needs a 1 MiB build
-anyway) still has no working write path on this fixture. The rest of
+All 581 words of the bootloader went in that way (about 18.6 KB). Since
+2026-11-02 it covers every sector of both banks (bank 2 through the
+`0x52002100` register block), places the sector at `0x08000000` first and its
+vector table last, so the full ArduCopter image goes through it too. The rest of
 `tools/h7_direct/` holds the checks used along the way: `readback.py`,
 `spotcheck.py`, `h7_one_word.sh` and `h7_ecc_check.sh`.
 
@@ -502,6 +503,22 @@ alone is enough to make the board bootable and reachable again.
 `0x08000000`..`0x0801FFFF` (the bootloader sector) is the same either way, so a
 sector-0-only write still fits and is enough to make the board bootable again.
 
+#### Update 2026-11-02: the die is 2 MiB, only the marking says 1 MiB
+
+USB DFU wrote the full 1,645,996-byte image to this pad and it ran. Read over
+SWD afterwards: `FLASHSIZE` (`0x1FF1E880`) still reads `0x0400`, DBGMCU_IDCODE
+is `0x20036450` (H74x/75x rev V), and yet `0x08190000` holds code and
+`0x081FFFE0` reads erased - neither exists on a real 1 MiB part (its bank 2 is
+`0x08100000..0x0817FFFF`, the rest bus-faults). So "settled" above was wrong:
+the register under-reports. The wrapper now asks the flash instead of trusting
+the register: when the image is bigger than the probe, it reads the top word of
+every sector the image needs, and only refuses (`FLASH_FAILED size`) if one of
+them does not answer:
+
+```text
+device flash: FLASHSIZE says 1024 KiB, but every sector up to 0x08191dac answers - the die is bigger than its marking
+```
+
 ### Mass erase: only with a writer that works, and only after the size check
 
 `STLINK_MASS_ERASE=1` erases the whole flash before writing. Two rules make it
@@ -525,7 +542,7 @@ STLINK_MASS_ERASE=1 tools/stlink_flash.sh /tmp/bl_sector0.bin 0x08000000
 #   FLASH_OK 131072 bytes @ 0x8000000 backend stflash ...
 ```
 
-With the default direct writer the same knob erases sector 0 only. The
+With the default direct writer the same knob erases every sector the image touches. The
 OpenOCD `stm32h7x mass_erase 0` path went with the OpenOCD backend. A failed
 write after an erase is recorded in `erased but NOT written:`, so a blank board
 is never reported as "nothing was erased".
